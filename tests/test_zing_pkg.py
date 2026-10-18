@@ -356,6 +356,33 @@ class RegistryServer(PkgTestCase):
         self.assertEqual(action, "upgraded")
         self.assertEqual(pkg.load_installed("up")["version"], "2.0.0")
 
+    def test_range_install_picks_the_newest_match(self):
+        self.publish("multi", "1.2.0")
+        self.publish("multi", "1.2.9")
+        self.publish("multi", "2.0.0")
+        pkg.install_from_registry("multi", spec="~1.2")
+        self.assertEqual(pkg.load_installed("multi")["version"], "1.2.9")
+
+    def test_range_install_can_pick_an_older_version(self):
+        self.publish("older", "1.0.0")
+        self.publish("older", "2.5.0")
+        pkg.install_from_registry("older", spec="<2.0")
+        self.assertEqual(pkg.load_installed("older")["version"], "1.0.0")
+
+    def test_range_install_reports_when_nothing_matches(self):
+        self.publish("tiny", "1.0.0")
+        with self.assertRaises(pkg.PackageError) as ctx:
+            pkg.install_from_registry("tiny", spec=">=9.0")
+        self.assertIn("matches", str(ctx.exception))
+
+    def test_registry_keeps_every_published_version(self):
+        self.publish("hist", "1.0.0")
+        self.publish("hist", "1.1.0")
+        meta = self.registry.meta("hist")
+        versions = sorted(v["version"] for v in meta["versions"])
+        self.assertEqual(versions, ["1.0.0", "1.1.0"])
+        self.assertEqual(meta["version"], "1.1.0")
+
     def test_publish_requires_a_token_when_the_server_has_one(self):
         from http.server import ThreadingHTTPServer
 

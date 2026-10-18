@@ -105,6 +105,34 @@ print(greet("jai"))            // hello, jai
 print(greet("jai", "hi"))      // hi, jai
 ```
 
+Arguments can be passed by name, in any order, mixed with positional ones:
+
+```zng
+func box(w, h, depth = 1) { return w * h * depth }
+print(box(h: 2, w: 3))         // 6
+print(box(3, 2, depth: 5))     // 30
+```
+
+Parameters and the result can carry a type, checked when the call runs:
+
+```zng
+func add(a: int, b: int) -> int { return a + b }
+print(add(2, 3))               // 5
+```
+
+`func(...) { ... }` is a function value, so closures and decorators work:
+
+```zng
+func adder(n) { return func(x) { return x + n } }
+let inc = adder(1)
+print(inc(41))                 // 42
+
+func twice(f) { return func(x) { return f(x) * 2 } }
+@twice
+func bump(n) { return n + 1 }
+print(bump(3))                 // 8
+```
+
 ---
 
 ## 7. Lists (arrays)
@@ -294,6 +322,18 @@ print(VERSION)      // 1
 Anything in the file is available after the import. Names starting with `_`
 stay private to the module. Importing the same file twice loads it only once.
 
+Shared packages install with `zing install NAME`, and a project's `zing.json`
+lists dependencies with version ranges. `zing sync` installs the newest release
+that satisfies each range:
+
+```json
+"dependencies": { "mathx": "~1.2", "jsonpack": ">=0.3, <1.0" }
+```
+
+Ranges accept `>= <= == != > <`, `~` (compatible release), `^`, wildcards like
+`1.2.*`, and comma-separated sets. `zing install NAME --version "~1.2"` pins a
+range during install.
+
 ---
 
 ## 14. Constants
@@ -315,11 +355,16 @@ print(round(PI * 2, 4))  // 6.2832
 
 **Lists** `len push pop range(start, stop, step)`
 
+**Sets** `len`, `{1, 2, 3}` literals, `| & - ^` (union, intersect, difference,
+symmetric difference) and `in`
+
 **Maps** `len keys values has`
+
+**Regex** `re_match re_search re_replace re_findall re_split`
 
 **Files** `open read read_line read_lines write write_line close file_exists list_dir remove_file`
 
-**Other** `print str int float type input exit clock`
+**Other** `print str int float type input exit clock next`
 
 `min`, `max` and `sum` take either a list or loose arguments:
 
@@ -343,9 +388,70 @@ language itself needs nothing but Python 3.11 or newer, and no network access.
 
 ---
 
+## 17. Sets, unpacking, generators and regex
+
+### Sets
+
+`{1, 2, 3}` is a set; a `{...}` containing `:` is still a map. Combine sets
+with `| & - ^` and test membership with `in`:
+
+```zng
+let a = {1, 2, 3}
+let b = {3, 4}
+print(a | b)       // {1, 2, 3, 4}
+print(a & b)       // {3}
+print(a - b)       // {1, 2}
+print(2 in a)      // true
+```
+
+### Unpacking
+
+```zng
+let [x, y] = [10, 20]
+print(x + y)                     // 30
+let {name, age} = {name: "zing", age: 3}
+print(name)                      // zing
+```
+
+### Generators
+
+A function that uses `yield` hands back values one at a time. Loop over it, or
+pull them with `next`:
+
+```zng
+func count(n) {
+    let i = 0
+    while i < n { yield i; i = i + 1 }
+}
+for x in count(3) { print(x) }   // 0, 1, 2
+let g = count(2)
+print(next(g))                   // 0
+```
+
+### Map comprehensions
+
+`{k: v for x in xs if cond}` builds a map, and the key is a real expression
+(unlike a plain map literal, where a bare name is a literal key):
+
+```zng
+print({x: x * x for x in [1, 2, 3]})           // {1: 1, 2: 4, 3: 9}
+print({n: n * 2 for n in [1, 2, 3] if n > 1})  // {2: 4, 3: 6}
+```
+
+### Regular expressions
+
+```zng
+print(re_match("h.*o", "hello world"))     // hello wo
+print(re_search("[0-9]+", "abc 123"))      // 123
+print(re_replace("[aeiou]", "*", "hello")) // h*ll*
+print(re_findall("[0-9]+", "a1 b22"))      // [1, 22]
+print(re_split("[, ]+", "a, b c"))         // [a, b, c]
+```
+
+---
+
 ## What comes next
 
-Not yet available: list and map comprehensions, `for i, value in` pairs,
-generators, nested functions and closures, context managers, sets, and
-decorators. Each is a planned addition; check the tests in `tests/` for the
-exact current state of the language.
+Still planned: a `match` statement, modules with explicit exports, and more
+tooling. `zing fmt` formats a file today; a language server is not written yet.
+Check the tests in `tests/` for the exact current state of the language.

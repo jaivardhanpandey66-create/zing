@@ -18,7 +18,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
 from pathlib import Path
 
 from .lexer import JaiError
@@ -26,10 +26,11 @@ from .parser import (
     Assign, Attribute, Binary, Block, Break, Call, ClassDecl, Continue,
     Field as FieldDecl, For, FuncDecl, If, Import, Index, Let, ListLit,
     Literal, Logical, MapLit, MethodCall, New, Program, Return, SelfRef,
-    Unary, Var, While,
+    SetLit, Unary, Var, While,
     Catch,    Throw,    Try,
     Parser,
-    Comprehension,)
+    Comprehension,
+    Decorated, Destructure, FuncExpr, KeywordArg, Yield,)
 
 
 class RuntimeError_(JaiError):
@@ -102,6 +103,56 @@ class ContinueSignal(Exception):
 class ExitSignal(Exception):
     def __init__(self, code: int = 0):
         self.code = code
+
+
+class GenBreak(Exception):
+    pass
+
+
+class GenContinue(Exception):
+    pass
+
+
+class GenReturn(Exception):
+    def __init__(self, value=None):
+        self.value = value
+
+
+def _contains_yield(node) -> bool:
+    """True if a function body contains a yield, making it a generator."""
+    if isinstance(node, (tuple, list)):
+        return any(_contains_yield(x) for x in node)
+    if isinstance(node, Yield):
+        return True
+    if not hasattr(node, "__dataclass_fields__"):
+        return False
+    for f in dc_fields(node):
+        if _contains_yield(getattr(node, f.name)):
+            return True
+    return False
+
+
+class GenIter:
+    """A paused generator function, pulled with for-in or next()."""
+
+    __slots__ = ("gen", "done", "name")
+
+    def __init__(self, gen, name: str = "<generator>"):
+        self.gen = gen
+        self.done = False
+        self.name = name
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.done:
+            raise StopIteration
+        try:
+            return next(self.gen)
+        except StopIteration:
+            self.done = True
+            raise
 
 
 # ------------------------------------------------------------------ values
@@ -280,11 +331,51 @@ class Interpreter:
             self.out.write(line)
 
         def _len(v):
-            if isinstance(v, (list, str, dict)):
+            if isinstance(v, (list, str, dict, set)):
                 return len(v)
             raise RuntimeError_(
-                f"len() needs a list, map or string, not {type(v).__name__}"
+                f"len() needs a list, map, string or set, not "
+                f"{type(v).__name__}"
             )
+
+        def _next(v):
+            if not isinstance(v, GenIter):
+                raise RuntimeError_("next() needs a generator")
+            try:
+                return next(v)
+            except StopIteration:
+                return None
+
+        import re as _re
+
+        def _compile(pattern):
+            try:
+                return _re.compile(str(pattern))
+            except _re.error as e:
+                raise RuntimeError_(f"bad regular expression: {e}") from None
+
+        def _re_match(pattern, text):
+            m = _compile(pattern).match(str(text))
+            return m.group(0) if m else None
+
+        def _re_search(pattern, text):
+            m = _compile(pattern).search(str(text))
+            return m.group(0) if m else None
+
+        def _re_replace(pattern, repl, text):
+            return _compile(pattern).sub(str(repl), str(text))
+
+        def _re_findall(pattern, text):
+            out = []
+            for x in _compile(pattern).findall(str(text)):
+                if isinstance(x, tuple):
+                    out.append([str(y) for y in x])
+                else:
+                    out.append(str(x))
+            return out
+
+        def _re_split(pattern, text):
+            return _compile(pattern).split(str(text))
 
         def _str(v):
             return self.to_display(v)
@@ -642,9 +733,18 @@ class Interpreter:
             ("float", _float), ("input", _input), ("push", _push),
             ("pop", _pop), ("range", _range), ("type", _type), ("has", _has),
             ("keys", _keys), ("values", _values), ("sqrt", _sqrt),
-            ("exit", _exit), ("clock", _clock),
+            ("exit", _exit), ("clock", _clock), ("next", _next),
+            ("re_match", _re_match), ("re_search", _re_search),
+            ("re_replace", _re_replace), ("re_findall", _re_findall),
+            ("re_split", _re_split),
         ]:
             g.define(name, NativeFn(name, fn))
+
+    def _map_key(self, k, line):
+        """A map literal key node -> its text (names stay literal keys)."""
+        if isinstance(k, Var):
+            return k.name
+        return k.value
 
     def iterables(self, value, line):
         """What `for x in ...` accepts, as a list of items."""
@@ -654,22 +754,35 @@ class Interpreter:
             return list(value)
         if isinstance(value, list):
             return value
+        if isinstance(value, set):
+            return list(value)
+        if isinstance(value, GenIter):
+            return list(value)
         raise RuntimeError_(
-            f"'for x in ...' needs a list, a map, a string, or a range "
-            f"like 0..10, got {self.type_name(value)}", line)
+            f"'for x in ...' needs a list, a map, a string, a set, a "
+            f"generator, or a range like 0..10, got {self.type_name(value)}",
+            line)
 
     def run_comprehension(self, node, env):
-        """[expr for x in seq if cond] -- the loop, without the ceremony."""
+        """[expr for x in seq if cond], or {k: v for x in seq}."""
         outer = Env(env)
-        out = []
         if node.nested is not None:
             # A second `for` clause: iterate, then run the inner one per item.
+            if node.is_map:
+                merged = {}
+                for item in self.iterables(
+                        self.eval(node.seq, outer), node.line):
+                    scope = Env(outer)
+                    scope.define(node.var, item)
+                    merged.update(self.run_comprehension(node.nested, scope))
+                return merged
             collected = []
             for item in self.iterables(self.eval(node.seq, outer), node.line):
                 scope = Env(outer)
                 scope.define(node.var, item)
-                collected.extend(self.eval(node.nested, scope))
+                collected.extend(self.run_comprehension(node.nested, scope))
             return collected
+        out = {} if node.is_map else []
         items = self.iterables(self.eval(node.seq, outer), node.line)
         for position, item in enumerate(items):
             scope = Env(outer)
@@ -684,7 +797,11 @@ class Interpreter:
                     keep = False
                     break
             if keep:
-                out.append(self.eval(node.element, scope))
+                value = self.eval(node.element, scope)
+                if node.is_map:
+                    out[self.eval(node.key, scope)] = value
+                else:
+                    out.append(value)
         return out
 
     def slice(self, target, start, stop, line):
@@ -763,6 +880,9 @@ class Interpreter:
                 f"{k}: {self.to_display(x)}" for k, x in v.items()
             )
             return "{" + body + "}"
+        if isinstance(v, set):
+            return "{" + ", ".join(sorted(self.to_display(x)
+                                          for x in v)) + "}"
         return str(v)
 
     def truthy(self, v) -> bool:
@@ -873,6 +993,31 @@ class Interpreter:
             env.assign_new(node.name, self.eval(node.value, env))
             return None
 
+        if t is Destructure:
+            value = self.eval(node.value, env)
+            if node.kind == "list":
+                if not isinstance(value, (list, str)):
+                    raise RuntimeError_(
+                        f"cannot unpack a {self.type_name(value)} into "
+                        f"a list pattern; use a list or string", node.line)
+                for i, name in enumerate(node.targets):
+                    if i >= value.__len__():
+                        raise RuntimeError_(
+                            f"list has {value.__len__()} item(s), not enough "
+                            f"for {len(node.targets)} name(s)", node.line)
+                    env.assign_new(name, value[i])
+            else:
+                if not isinstance(value, dict):
+                    raise RuntimeError_(
+                        f"cannot unpack a {self.type_name(value)} into "
+                        f"a map pattern {node.targets}", node.line)
+                for name in node.targets:
+                    if name not in value:
+                        raise RuntimeError_(
+                            f"map has no key {name!r}", node.line)
+                    env.assign_new(name, value[name])
+            return None
+
         if t is Block:
             inner = Env(env)
             for s in node.body:
@@ -881,6 +1026,19 @@ class Interpreter:
 
         if t is FuncDecl:
             env.define(node.name, Function(node, env))
+            return None
+
+        if t is Decorated:
+            self.exec_stmt(node.decl, env)
+            value = env.get(node.decl.name)
+            for dname in reversed(node.names):
+                deco = self.eval(Var(line=node.line, name=dname), env)
+                if not isinstance(deco, (Function, NativeFn, BoundMethod)):
+                    raise RuntimeError_(
+                        f"{dname} is not callable, so it cannot decorate "
+                        f"{node.decl.name}()", node.line)
+                value = self.invoke(deco, [value], node.line)
+            env.set(node.decl.name, value)
             return None
 
         if t is ClassDecl:
@@ -920,10 +1078,14 @@ class Interpreter:
                     items = list(items.keys())
                 elif isinstance(items, str):
                     items = list(items)
-                if not isinstance(items, list):
+                elif isinstance(items, set):
+                    items = list(items)
+                elif isinstance(items, GenIter):
+                    pass  # pulled lazily, one value at a time
+                if not isinstance(items, (list, GenIter)):
                     raise RuntimeError_(
                         "'for x in ...' needs a list, a map, a string, "
-                        "or a range like 0..10",
+                        "a set, a generator, or a range like 0..10",
                         node.line,
                     )
             else:
@@ -1073,7 +1235,27 @@ class Interpreter:
             return [self.eval(x, env) for x in node.items]
 
         if t is MapLit:
-            return {k: self.eval(v, env) for k, v in node.pairs}
+            return {self._map_key(k, node.line): self.eval(v, env)
+                    for k, v in node.pairs}
+
+        if t is FuncExpr:
+            decl = FuncDecl(
+                line=node.line, name="<anonymous>", params=node.params,
+                body=node.body, is_method=False, returns=node.returns)
+            return Function(decl, env)
+
+        if t is SetLit:
+            out = set()
+            for item in node.items:
+                value = self.eval(item, env)
+                try:
+                    out.add(value)
+                except TypeError:
+                    raise RuntimeError_(
+                        f"set elements must be hashable (numbers, strings, "
+                        f"true/false, null), not {self.type_name(value)}",
+                        node.line) from None
+            return out
 
         if t is Binary:
             return self.binary(node, env)
@@ -1224,6 +1406,8 @@ class Interpreter:
             self._check_number(a, b, op, node.line)
             return a + b
         if op == "-":
+            if isinstance(a, set) and isinstance(b, set):
+                return a - b
             self._check_number(a, b, op, node.line)
             return a - b
         if op == "*":
@@ -1257,12 +1441,23 @@ class Interpreter:
             return {
                 "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b,
             }[op]
+        if op == "in":
+            if isinstance(b, set) or isinstance(b, list) or isinstance(b, str):
+                return a in b
+            if isinstance(b, dict):
+                return a in list(b.keys())
+            raise RuntimeError_(
+                f"'in' needs a list, map, string or set on the right, got "
+                f"{self.type_name(b)}", node.line)
         if op in ("&", "|", "^", "<<", ">>"):
+            if isinstance(a, set) and isinstance(b, set):
+                return {"&": a & b, "|": a | b, "^": a ^ b}[op]
             for value in (a, b):
                 if not isinstance(value, int) or isinstance(value, bool):
                     raise RuntimeError_(
-                        f"{op} needs two integers, got {self.type_name(a)} "
-                        f"{self.type_name(b)}", node.line)
+                        f"{op} needs two integers or two sets, got "
+                        f"{self.type_name(a)} {self.type_name(b)}",
+                        node.line)
             if op == "&":
                 return a & b
             if op == "|":
@@ -1428,11 +1623,50 @@ class Interpreter:
                 node.line,
             )
 
-        args = [self.eval(a, env) for a in node.args]
-        return self.invoke(callee, args, node.line, node.args)
+        args = []
+        kwargs = {}
+        for a in node.args:
+            if isinstance(a, KeywordArg):
+                if a.name in kwargs:
+                    raise RuntimeError_(
+                        f"got {a.name!r} more than once", a.line)
+                kwargs[a.name] = self.eval(a.value, env)
+            else:
+                args.append(self.eval(a, env))
+        return self.invoke(callee, args, node.line, node.args, kwargs)
 
-    def invoke(self, callee, args, line: int, arg_nodes=()):
+    def _matches(self, value, tname: str) -> bool:
+        """Does a runtime value satisfy a type annotation name?"""
+        if not tname:
+            return True
+        if tname in ("any", "var"):
+            return True
+        if tname == "int":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if tname == "float":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if tname == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if tname == "bool":
+            return isinstance(value, bool)
+        if tname == "string" or tname == "str" or tname == "text":
+            return isinstance(value, str)
+        if tname == "list":
+            return isinstance(value, list)
+        if tname == "map":
+            return isinstance(value, dict)
+        if tname == "set":
+            return isinstance(value, set)
+        return True
+
+    def invoke(self, callee, args, line: int, arg_nodes=(), kwargs=None):
+        kwargs = kwargs or {}
         if isinstance(callee, NativeFn):
+            if kwargs:
+                extra = " ".join(sorted(kwargs))
+                raise RuntimeError_(
+                    f"{callee.name}() does not accept keyword arguments "
+                    f"({extra})", line)
             try:
                 return callee.fn(*args)
             except RuntimeError_:
@@ -1466,34 +1700,165 @@ class Interpreter:
                     )
                 scope.define("self", args[0])
                 first = 1
-            for i, p in enumerate(callee.decl.params):
+            params = callee.decl.params
+            bound = [None] * len(params)
+            used = [False] * len(params)
+            # Positional arguments fill the remaining slots in order.
+            for i, p in enumerate(params):
                 slot = i + first
                 if slot < len(args):
-                    scope.define(p.name, args[slot])
+                    bound[i] = args[slot]
+                    used[i] = True
+            # Missing positionals may be completed by keyword arguments,
+            # which can also arrive in any order.
+            index_of = {p.name: i for i, p in enumerate(params)}
+            for name, value in kwargs.items():
+                if name not in index_of:
+                    raise RuntimeError_(
+                        f"{callee.name}() got an unexpected argument "
+                        f"{name!r}", line)
+                i = index_of[name]
+                if used[i]:
+                    raise RuntimeError_(
+                        f"{callee.name}() got {name!r} more than once", line)
+                bound[i] = value
+                used[i] = True
+            filler = " ".join(sorted(kwargs))
+            extra = len(args) - len(params) - first
+            if extra > 0:
+                if extra == 1:
+                    raise RuntimeError_(
+                        f"{callee.name}() takes {len(params)} "
+                        f"argument(s) but 1 extra was given", line)
+                raise RuntimeError_(
+                    f"{callee.name}() takes {len(params)} "
+                    f"argument(s) but {extra} extra were given", line)
+            for i, p in enumerate(params):
+                if used[i]:
+                    if p.annotation and not self._matches(bound[i], p.annotation):
+                        raise RuntimeError_(
+                            f"{callee.name}() parameter {p.name!r} expects "
+                            f"{p.annotation}, got "
+                            f"{self.type_name(bound[i])}", line)
+                    scope.define(p.name, bound[i])
                 elif p.default is not None:
                     scope.define(p.name, self.eval(p.default, scope))
+                elif p.annotation:
+                    raise RuntimeError_(
+                        f"{callee.name}() needs a value for {p.name!r}", line)
                 else:
                     raise RuntimeError_(
                         f"{callee.name}() needs a value for {p.name!r}", line
                     )
-            # Extra positional arguments are an error, not silently ignored.
-            extra = len(args) - len(callee.decl.params) - first
-            if extra > 0:
-                plural = "s" if extra != 1 else ""
-                raise RuntimeError_(
-                    f"{callee.name}() takes {len(callee.decl.params)} "
-                    f"argument(s) but {extra} extra {plural} were given",
-                    line,
-                )
+            if _contains_yield(callee.decl.body):
+                # A generator binds its arguments now but runs later, the
+                # first time a value is pulled out of it.
+                self.depth -= 1
+                return GenIter(
+                    self._gen_run(callee.decl.body, scope, line),
+                    callee.name)
             try:
                 self.exec_stmt(callee.decl.body, scope)
             except ReturnSignal as r:
+                if (callee.decl.returns
+                        and not self._matches(r.value, callee.decl.returns)):
+                    raise RuntimeError_(
+                        f"{callee.name}() should return {callee.decl.returns}, "
+                        f"got {self.type_name(r.value)}", line) from None
                 return r.value
             finally:
                 self.depth -= 1
             return None
 
         raise RuntimeError_(f"{self.to_display(callee)} is not callable", line)
+
+    def _gen_run(self, node, env, line):
+        """Run one generator body as a Python generator of yielded values.
+
+        Instead of one `exec_stmt` pass, each statement is re-walked with
+        Python's own generators, so `yield` pauses in place and the frame
+        (locals, loop position) survives until the next pull.
+        """
+        self.depth += 1
+        if self.depth > self.MAX_DEPTH:
+            self.depth -= 1
+            raise RuntimeError_("stack overflow inside a generator", line)
+        try:
+            yield from self._gen_walk(node, env)
+        finally:
+            self.depth -= 1
+
+    def _gen_walk(self, node, env):
+        t = type(node)
+        if t is Block:
+            inner = Env(env)
+            for stmt in node.body:
+                yield from self._gen_walk(stmt, inner)
+            return
+        if t is If:
+            for cond, body in node.branches:
+                if self.truthy(self.eval(cond, env)):
+                    yield from self._gen_walk(body, Env(env))
+                    return
+            if node.orelse is not None:
+                yield from self._gen_walk(node.orelse, Env(env))
+            return
+        if t is While:
+            while self.truthy(self.eval(node.cond, env)):
+                try:
+                    yield from self._gen_walk(node.body, Env(env))
+                except GenContinue:
+                    continue
+                except GenBreak:
+                    break
+            return
+        if t is For:
+            items = self._for_items(node, env)
+            for position, item in enumerate(items):
+                scope = Env(env)
+                if node.var2:
+                    scope.define(node.var, position)
+                    scope.define(node.var2, item)
+                else:
+                    scope.define(node.var, item)
+                try:
+                    yield from self._gen_walk(node.body, scope)
+                except GenContinue:
+                    continue
+                except GenBreak:
+                    break
+            return
+        if t is Yield:
+            yield (self.eval(node.value, env)
+                   if node.value is not None else None)
+            return
+        if t is Return:
+            raise GenReturn(
+                self.eval(node.value, env) if node.value is not None else None)
+        if t is Break:
+            raise GenBreak()
+        if t is Continue:
+            raise GenContinue()
+        self.exec_stmt(node, env)
+
+    def _for_items(self, node, env):
+        if node.stop is None:
+            items = self.eval(node.start, env)
+            if isinstance(items, dict):
+                return list(items.keys())
+            if isinstance(items, str):
+                return list(items)
+            if isinstance(items, set):
+                return list(items)
+            if isinstance(items, (list, GenIter)):
+                return items
+            raise RuntimeError_(
+                f"'for x in ...' needs a list, a map, a string, a set, or "
+                f"a generator, got {self.type_name(items)}", node.line)
+        start = self.eval(node.start, env)
+        stop = self.eval(node.stop, env)
+        self._check_number(start, stop, "..", node.line)
+        return list(range(int(start), int(stop)))
 
 
 def run_source(

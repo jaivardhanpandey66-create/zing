@@ -53,6 +53,11 @@ class ListLit(Node):
 
 
 @dataclass(frozen=True, slots=True)
+class SetLit(Node):
+    items: tuple = ()
+
+
+@dataclass(frozen=True, slots=True)
 class MapLit(Node):
     pairs: tuple = ()
 
@@ -125,9 +130,41 @@ class Let(Node):
 
 
 @dataclass(frozen=True, slots=True)
+class FuncExpr(Node):
+    params: tuple = ()
+    body: object = None
+    returns: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Yield(Node):
+    value: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class Decorated(Node):
+    names: tuple = ()
+    decl: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class Destructure(Node):
+    targets: tuple = ()
+    kind: str = "list"      # 'list' | 'map'
+    value: object = None
+
+
+@dataclass(frozen=True, slots=True)
 class Param(Node):
     name: str = ""
     default: object = None
+    annotation: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class KeywordArg(Node):
+    name: str = ""
+    value: object = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +173,7 @@ class FuncDecl(Node):
     params: tuple = ()
     body: object = None
     is_method: bool = False
+    returns: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,10 +463,29 @@ class Parser:
 
         if self.at_kw("let", "var"):
             return self.let_stmt()
+        if self.at_op("@"):
+            names = []
+            while self.accept_op("@"):
+                names.append(str(self.expect_ident().value))
+                self.skip_newlines()
+            if not self.at_kw("func"):
+                raise ParseError(
+                    "@ decorators must precede a func", self.cur.line,
+                    self.cur.col)
+            return Decorated(
+                line=t.line, names=tuple(names), decl=self.func_decl())
         if self.at_kw("func"):
             return self.func_decl()
         if self.at_kw("class"):
             return self.class_decl()
+        if self.at_kw("yield"):
+            self.advance()
+            value = None
+            if not (self.cur.kind == "newline" or self.at_op(";")
+                    or self.at("eof")):
+                value = self.expression()
+            self.end_statement()
+            return Yield(line=t.line, value=value)
         if self.at_kw("return"):
             self.advance()
             if self.cur.kind == "newline" or self.at_op(";") or self.at("eof"):
@@ -484,6 +541,31 @@ class Parser:
 
     def let_stmt(self):
         t = self.advance()  # let / var
+        names: list[str] = []
+        if self.at_op("["):
+            self.advance()
+            if not self.at_op("]"):
+                while True:
+                    names.append(str(self.expect_ident().value))
+                    if not self.accept_op(","):
+                        break
+            self.expect_op("]")
+            self.expect_op("=")
+            value = self.expression()
+            return Destructure(
+                line=t.line, targets=tuple(names), kind="list", value=value)
+        if self.at_op("{"):
+            self.advance()
+            if not self.at_op("}"):
+                while True:
+                    names.append(str(self.expect_ident().value))
+                    if not self.accept_op(","):
+                        break
+            self.expect_op("}")
+            self.expect_op("=")
+            value = self.expression()
+            return Destructure(
+                line=t.line, targets=tuple(names), kind="map", value=value)
         name = self.expect_ident()
         self.expect_op("=")
         value = self.expression()
@@ -503,10 +585,13 @@ class Parser:
         t = self.expect_kw("func")
         name = self.decl_name()
         params = self.param_list()
+        returns = ""
+        if self.accept_op("->"):
+            returns = str(self.expect_ident().value)
         body = self.block()
         return FuncDecl(
             line=t.line, name=name, params=params,
-            body=body, is_method=is_method,
+            body=body, is_method=is_method, returns=returns,
         )
 
     def param_list(self) -> tuple:
@@ -515,11 +600,15 @@ class Parser:
         if not self.at_op(")"):
             while True:
                 pname = self.expect_ident()
+                annotation = ""
+                if self.accept_op(":"):
+                    annotation = str(self.expect_ident().value)
                 default = None
                 if self.accept_op("="):
                     default = self.expression()
                 params.append(
-                    Param(line=pname.line, name=str(pname.value), default=default)
+                    Param(line=pname.line, name=str(pname.value),
+                          default=default, annotation=annotation)
                 )
                 if not self.accept_op(","):
                     break
@@ -663,11 +752,17 @@ class Parser:
 
     def comparison(self):
         left = self.bit_or()
-        if self.at_op("==", "!=", "<", "<=", ">", ">="):
-            op = str(self.advance().value)
-            right = self.bit_or()
-            return Binary(line=left.line, op=op, left=left, right=right)
-        return left
+        while True:
+            if self.at_op("==", "!=", "<", "<=", ">", ">="):
+                op = str(self.advance().value)
+                right = self.bit_or()
+                left = Binary(line=left.line, op=op, left=left, right=right)
+            elif self.at_kw("in"):
+                t = self.advance()
+                right = self.comparison()
+                left = Binary(line=t.line, op="in", left=left, right=right)
+            else:
+                return left
 
     def interpolated(self, line: int, text: str):
         """Build "a ${expr} b" into "" + str(...) + ... concatenation.
@@ -851,7 +946,15 @@ class Parser:
         args = []
         if not self.at_op(")"):
             while True:
-                args.append(self.expression())
+                if (self.at("ident") and self.peek().kind == "op"
+                        and self.peek().value == ":"):
+                    name = str(self.advance().value)
+                    self.expect_op(":")
+                    args.append(KeywordArg(
+                        line=self.cur.line, name=name,
+                        value=self.expression()))
+                else:
+                    args.append(self.expression())
                 if not self.accept_op(","):
                     break
                 # A trailing comma before ')' is allowed, so calls and lists
@@ -863,6 +966,16 @@ class Parser:
 
     def primary(self):
         t = self.cur
+
+        if self.at_kw("func"):
+            self.advance()
+            params = self.param_list()
+            returns = ""
+            if self.accept_op("->"):
+                returns = str(self.expect_ident().value)
+            body = self.block()
+            return FuncExpr(
+                line=t.line, params=params, body=body, returns=returns)
 
         if t.kind in ("int", "float", "string"):
             self.advance()
@@ -917,23 +1030,61 @@ class Parser:
 
         if self.at_op("{"):
             self.advance()
+            if self.at_op("}"):
+                self.advance()
+                return MapLit(line=t.line, pairs=())
+            is_map = False
             pairs = []
-            if not self.at_op("}"):
-                while True:
-                    k = self.cur
-                    if k.kind in ("string", "ident"):
-                        self.advance()
-                        key = str(k.value)
-                    else:
-                        raise ParseError(
-                            f"expected a map key but found {k}", k.line, k.col
-                        )
-                    self.expect_op(":")
-                    pairs.append((key, self.expression()))
+            items = []
+
+            def map_only_key() -> object:
+                # After ':' we know this is a map, so keys are restricted
+                # to names and strings; a name stays a node so map
+                # comprehensions can evaluate it, and a plain literal map
+                # collapses it to its text when evaluated.
+                k = self.cur
+                if k.kind == "string":
+                    self.advance()
+                    return Literal(line=k.line, value=str(k.value))
+                if k.kind == "ident":
+                    self.advance()
+                    return Var(line=k.line, name=str(k.value))
+                raise ParseError(
+                    f"expected a map key but found {k}", k.line, k.col)
+
+            # The first entry decides: ':' means a map, ',' or '}' a set.
+            first = self.expression()
+            if self.accept_op(":"):
+                is_map = True
+                first_value = self.expression()
+                if self.at_kw("for"):
+                    # {k: v for x in xs} -- keys here are real expressions,
+                    # unlike a plain map literal whose names stay literal.
+                    comp = self.comprehension_tail(first_value, key=first)
+                    self.expect_op("}")
+                    return comp
+                pairs.append((first, first_value))
+            else:
+                items.append(first)
+            while True:
+                if is_map:
                     if not self.accept_op(","):
                         break
+                    if self.at_op("}"):
+                        break
+                    k = map_only_key()
+                    self.expect_op(":")
+                    pairs.append((k, self.expression()))
+                else:
+                    if not self.accept_op(","):
+                        break
+                    if self.at_op("}"):
+                        break
+                    items.append(self.expression())
             self.expect_op("}")
-            return MapLit(line=t.line, pairs=tuple(pairs))
+            if is_map:
+                return MapLit(line=t.line, pairs=tuple(pairs))
+            return SetLit(line=t.line, items=tuple(items))
 
         raise ParseError(f"unexpected {t}", t.line, t.col)
 

@@ -58,9 +58,18 @@ class Registry:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def archive(self, name: str) -> Path | None:
-        path = self.root / "packages" / name / f"{name}.zip"
-        return path if path.is_file() else None
+    def archive(self, name: str, version: str | None = None) -> Path | None:
+        folder = self.root / "packages" / name
+        latest = folder / f"{name}.zip"
+        if version:
+            meta = self.meta(name)
+            # The newest release lives as {name}.zip; older ones are
+            # snapshotted under {name}-{version}.zip.
+            if meta and str(meta.get("version")) == str(version):
+                return latest if latest.is_file() else None
+            path = folder / f"{name}-{version}.zip"
+            return path if path.is_file() else None
+        return latest if latest.is_file() else None
 
     # -- writing ---------------------------------------------------
     def publish(self, meta: dict, zip_bytes: bytes) -> dict:
@@ -85,6 +94,18 @@ class Registry:
                     folder / f"{name}-{existing['version']}.zip",
                 )
             (folder / f"{name}.zip").write_bytes(zip_bytes)
+            (folder / f"{name}-{version}.zip").write_bytes(zip_bytes)
+            history = []
+            if existing:
+                history = [h for h in existing.get("versions", [])
+                           if isinstance(h, dict)
+                           and str(h.get("version")) != version]
+            history.append({
+                "version": version,
+                "sha256": digest,
+                "size": len(zip_bytes),
+                "file": f"{name}-{version}.zip",
+            })
             record = {
                 "name": name,
                 "version": version,
@@ -93,6 +114,7 @@ class Registry:
                 "main": str(meta.get("main", "")),
                 "sha256": digest,
                 "size": len(zip_bytes),
+                "versions": history,
             }
             (folder / "meta.json").write_text(
                 json.dumps(record, indent=2) + "\n", encoding="utf-8"
@@ -173,9 +195,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if parts[:2] == ["api", "packages"] and len(parts) == 4 \
                 and parts[3] == "download":
-            archive = reg.archive(parts[2])
+            from urllib.parse import parse_qs
+            query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path \
+                else {}
+            version = (query.get("version") or [None])[0]
+            archive = reg.archive(parts[2], version)
             if archive is None:
-                self._send_json(404, {"error": f"no package named {parts[2]!r}"})
+                self._send_json(404, {"error": f"no package named {parts[2]!r}"
+                                      + (f" at {version}" if version else "")})
                 return
             self._send_bytes(200, archive.read_bytes(), "application/zip")
             return

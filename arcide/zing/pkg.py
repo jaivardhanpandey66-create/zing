@@ -132,43 +132,112 @@ def _parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def _cmp_versions(a: str, b: str) -> int:
+    """Compare two versions, padding the shorter one with zeros."""
+    av, bv = _parse_version(a), _parse_version(b)
+    length = max(len(av), len(bv))
+    av = av + (0,) * (length - len(av))
+    bv = bv + (0,) * (length - len(bv))
+    return (av > bv) - (av < bv)
+
+
+_OP_RE = re.compile(r"^(>=|<=|==|!=|>|<|~|\^)\s*([\d.]+)$")
+_WILD_RE = re.compile(r"^([\d.]+)\.(?:x|X|\*)$")
+
+
+def _tilde(version: str, want: str) -> bool:
+    """~1.2 means >=1.2 and <2.0; ~1.2.3 means >=1.2.3 and <1.3.0."""
+    if _cmp_versions(version, want) < 0:
+        return False
+    parts = _parse_version(want)
+    upper = (parts[0], parts[1] + 1, 0) if len(parts) >= 3 \
+        else (parts[0] + 1, 0)
+    return _cmp_versions(version, ".".join(map(str, upper))) < 0
+
+
+def _caret(version: str, want: str) -> bool:
+    """^1.2.3 means >=1.2.3 and <2.0.0 (next minor while the major is 0)."""
+    if _cmp_versions(version, want) < 0:
+        return False
+    parts = _parse_version(want)
+    if parts and parts[0] > 0:
+        upper = (parts[0] + 1, 0, 0)
+    else:
+        upper = (0, (parts[1] + 1 if len(parts) > 1 else 1), 0)
+    return _cmp_versions(version, ".".join(map(str, upper))) < 0
+
+
+def _match_one(version: str, clause: str) -> bool:
+    clause = clause.strip()
+    if clause in ("", "*", "latest"):
+        return True
+    m = _OP_RE.match(clause)
+    if m:
+        op, want = m.group(1), m.group(2)
+        c = _cmp_versions(version, want)
+        if op == ">=":
+            return c >= 0
+        if op == "<=":
+            return c <= 0
+        if op == "==":
+            return c == 0
+        if op == "!=":
+            return c != 0
+        if op == ">":
+            return c > 0
+        if op == "<":
+            return c < 0
+        if op == "~":
+            return _tilde(version, want)
+        return _caret(version, want)
+    m = _WILD_RE.match(clause)
+    if m:
+        want = _parse_version(m.group(1))
+        return _parse_version(version)[:len(want)] == want
+    if re.fullmatch(r"[\d.]+", clause):
+        # A bare version means "at least this one".
+        return _cmp_versions(version, clause) >= 0
+    raise PackageError(f"cannot read version rule {clause!r}")
+
+
+def version_matches(version: str, spec: str) -> bool:
+    """Does a version satisfy a rule like '>=1.0, <2.0', '~1.2' or '1.2.*'?"""
+    if spec is None:
+        return True
+    spec = str(spec).strip()
+    if spec in ("", "*"):
+        return True
+    return all(_match_one(version, clause) for clause in spec.split(","))
+
+
+def resolve_best(versions, spec: str) -> str | None:
+    """The highest version in a list that satisfies spec, or None."""
+    ok = [str(v) for v in versions if version_matches(str(v), spec)]
+    if not ok:
+        return None
+    return max(ok, key=_parse_version)
+
+
 def parse_requirement(text: str) -> tuple[str, str]:
-    """Split 'mathx >=0.2' into ('mathx', '>=0.2')."""
-    match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|==|>|<)?\s*([\d.]*)\s*",
-                         text)
+    """Split 'mathx >=0.2' into ('mathx', '>=0.2').
+
+    Accepts comparisons, ~ and ^ ranges, wildcards like 1.2.*, and
+    comma-separated ranges such as '>=1.0, <2.0'.
+    """
+    match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(.*?)\s*", text)
     if not match:
         raise PackageError(f'cannot read requirement {text!r}: try "name >=1.0"')
-    name, op, version = match.groups()
-    if not op:
-        op, version = ">=", "0"
-    return name, f"{op}{version}"
+    name, spec = match.groups()
+    return name, (spec or ">=0")
 
 
 def requirement_met(text: str) -> bool:
-    """Is an installed package new enough for a requirement?"""
-    name, rule = parse_requirement(text)
+    """Is the installed package a version the requirement allows?"""
+    name, spec = parse_requirement(text)
     manifest = load_installed(name)
     if manifest is None:
         return False
-    have = _parse_version(manifest.get("version", "0"))
-    # The operator may be one character (>, <) or two (>=, <=, ==).
-    op = rule[:2] if rule[:2] in (">=", "<=", "==") else rule[:1]
-    want = rule[len(op):]
-    try:
-        want_v = _parse_version(want or "0")
-    except ValueError:
-        return False
-    if op == ">=":
-        return have >= want_v
-    if op == ">":
-        return have > want_v
-    if op == "<=":
-        return have <= want_v
-    if op == "<":
-        return have < want_v
-    if op == "==":
-        return have == want_v
-    raise PackageError(f"unknown comparison {op!r}")
+    return version_matches(str(manifest.get("version", "0")), spec)
 
 
 def _copy_package(source: Path, dest: Path) -> None:
@@ -331,6 +400,7 @@ def sync(folder: Path) -> tuple[list[str], list[str]]:
         raise PackageError(f"no {PROJECT_FILE} in {folder}")
     installed, missing = [], []
     for name, want in (project.get("dependencies") or {}).items():
+        spec = want if want not in (None, "") else "*"
         try:
             # A local folder or the local registry wins, so a package being
             # developed here shadows the published one. Only if there is no
@@ -338,11 +408,11 @@ def sync(folder: Path) -> tuple[list[str], list[str]]:
             try:
                 install(name, upgrade=True)
             except PackageError:
-                install_from_registry(name, upgrade=True)
+                install_from_registry(name, upgrade=True, spec=spec)
         except PackageError:
             missing.append(f"{name} {want}".strip())
             continue
-        if not requirement_met(f"{name} >={want}" if want != "*" else name):
+        if not requirement_met(f"{name} {spec}"):
             missing.append(f"{name} {want}".strip())
             continue
         installed.append(name)
@@ -495,8 +565,13 @@ def remote_search(term: str = "", registry: str = None,
 
 
 def install_from_registry(name: str, *, upgrade: bool = False,
-                        registry: str = None, token: str = None):
-    """Download a package from the configured registry and install it."""
+                        registry: str = None, token: str = None,
+                        spec: str = None):
+    """Download a package from the configured registry and install it.
+
+    spec is a version range such as '~1.2' or '>=1.0, <2.0'. When given,
+    the newest published version that satisfies it is chosen.
+    """
     import hashlib
     import io
     import zipfile
@@ -510,11 +585,26 @@ def install_from_registry(name: str, *, upgrade: bool = False,
         )
 
     info = _request(f"/api/packages/{name}", registry=registry, token=token)
-    version = str(info.get("version", "0"))
-    blob = _request_bytes(f"/api/packages/{name}/download",
+    history = [h for h in (info.get("versions") or []) if isinstance(h, dict)]
+    # Pick the newest release that satisfies the requested range, if any.
+    if spec is not None and str(spec).strip() not in ("", "*", "latest"):
+        available = [str(h.get("version")) for h in history] \
+            or [str(info.get("version", "0"))]
+        best = resolve_best(available, str(spec))
+        if best is None:
+            raise PackageError(
+                f"no published version of {name} matches {str(spec).strip()!r} "
+                f"(available: {', '.join(available)})")
+        version = best
+    else:
+        version = str(info.get("version", "0"))
+    entry = next(
+        (h for h in history if str(h.get("version")) == version), None)
+    query = f"?version={version}" if version else ""
+    blob = _request_bytes(f"/api/packages/{name}/download{query}",
                            registry=registry, token=token)
 
-    expected = info.get("sha256")
+    expected = (entry or {}).get("sha256") or info.get("sha256")
     if expected:
         actual = hashlib.sha256(blob).hexdigest()
         if actual != expected:

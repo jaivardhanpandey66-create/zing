@@ -21,16 +21,16 @@ KEYWORDS = frozenset(
     let var func return class extends new self
     if else elif while for in break continue
     true false null and or not import export from
-    try catch throw finally
+    try catch throw finally yield
     """.split()
 )
 
 # Longer first so 'elif' wins over 'else' + junk and 'extends' over 'extend'.
 OPERATORS = [
     "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "*=", "/=", "..", "=>",
-    "**", "**=", "%=", "<<", ">>",
+    "**", "**=", "%=", "<<", ">>", "->",
     "+", "-", "*", "/", "%", "=", "<", ">", "!", "(", ")", "{", "}", "[", "]",
-    ",", ":", ".", ";", "?", "&", "|", "^", "~",
+    ",", ":", ".", ";", "?", "&", "|", "^", "~", "@",
 ]
 
 

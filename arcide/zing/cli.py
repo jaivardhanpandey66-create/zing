@@ -228,7 +228,7 @@ USAGE = f"""{_C['bold']}zing {_C['off']} -- a small language for building things
 
 
 def install_one(pkg, target: str, *, upgrade: bool = False,
-                 registry: str = None, token: str = None):
+                 registry: str = None, token: str = None, spec: str = None):
     """Try a local folder or the registry folder first, then the network.
 
     "Already installed" is a final answer, not a reason to go online, so it
@@ -244,7 +244,8 @@ def install_one(pkg, target: str, *, upgrade: bool = False,
             raise  # a real folder, or an explicit no: do not try the network
     try:
         return pkg.install_from_registry(
-            target, registry=registry, token=token, upgrade=upgrade)
+            target, registry=registry, token=token, upgrade=upgrade,
+            spec=spec)
     except pkg.PackageError as remote_error:
         if "already installed" in str(remote_error):
             raise
@@ -275,7 +276,8 @@ def cmd_install(rest: list[str]) -> int:
             name, action = install_one(
                 pkg, target, upgrade=upgrade,
                 registry=options.get("registry"),
-                token=options.get("token"))
+                token=options.get("token"),
+                spec=options.get("version"))
         except pkg.PackageError as e:
             print(_C["red"] + f"install failed: {e}" + _C["off"], file=sys.stderr)
             bad = True
@@ -286,7 +288,7 @@ def cmd_install(rest: list[str]) -> int:
         project = Path.cwd()
         if (project / pkg.PROJECT_FILE).is_file():
             try:
-                pkg.add_dependency(project, name)
+                pkg.add_dependency(project, name, options.get("version") or "*")
             except pkg.PackageError as e:
                 print(_C["yellow"] + f"note: {e}" + _C["off"], file=sys.stderr)
         if action == "unchanged":
