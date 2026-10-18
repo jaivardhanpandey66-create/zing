@@ -162,18 +162,31 @@ cd zing &amp;&amp; ./install.sh --local .</code>
         problem. An accidental infinite loop stops with a message instead of
         hanging your editor.</p>
       </div>
+      <div>
+        <h4>Modern where it counts</h4>
+        <p>Keyword arguments, sets, list and map comprehensions, generators
+        with <code>yield</code>, <code>@decorators</code>, function values and
+        closures, destructuring like <code>let [a, b] = pair</code>, run-time
+        type annotations, and regex built in.</p>
+      </div>
     </div>
 
     <h3 class="sub">The whole language</h3>
     <div class="grid">
-      <div><h5>Values</h5><code>int float str bool null list map</code></div>
-      <div><h5>Declare</h5><code>let x = 1<br>var y = 2</code></div>
-      <div><h5>Functions</h5><code>func f(a, b = 10) { return a + b }</code></div>
+      <div><h5>Values</h5><code>int float str bool null list map set</code></div>
+      <div><h5>Declare</h5><code>let x = 1<br>let [a, b] = pair</code></div>
+      <div><h5>Functions</h5><code>func f(a: int, b = 10) -> int {}</code></div>
       <div><h5>Classes</h5><code>class Dog extends Animal { }</code></div>
       <div><h5>Choose</h5><code>if ... elif ... else</code></div>
-      <div><h5>Loop</h5><code>for i in 0..5<br>while cond</code></div>
+      <div><h5>Loop</h5><code>for i in 0..5<br>for x in gen()</code></div>
+      <div><h5>Comprehensions</h5><code>[x*x for x in xs]<br>{k: v for k in ks}</code></div>
+      <div><h5>Generators</h5><code>func g() { yield 1 }</code></div>
+      <div><h5>Decorators</h5><code>@log<br>func f() { }</code></div>
+      <div><h5>Sets</h5><code>{1, 2, 3}<br>a | b  a &amp; b  x in a</code></div>
+      <div><h5>Call</h5><code>f(b: 2, a: 1)</code></div>
+      <div><h5>Errors</h5><code>try { } catch e { }</code></div>
       <div><h5>Builtins</h5><code>print len str int push pop range type</code></div>
-      <div><h5>Built-ins</h5><code>has keys values sqrt exit clock</code></div>
+      <div><h5>Built-ins</h5><code>has keys values sqrt next re_match</code></div>
     </div>
   </section>
 

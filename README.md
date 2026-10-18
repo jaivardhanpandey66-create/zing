@@ -115,15 +115,27 @@ folders, and `zing config registry <url>` should point at your own.
 ## Language
 
 Classes with inheritance, `try`/`catch`/`finally`, `for` over ranges, lists,
-maps and strings, list comprehensions, slicing including negative bounds,
-string and math builtins, file I/O, and multi-file imports.
+sets and maps, list and map comprehensions, slicing including negative bounds,
+generators with `yield`, `@decorators`, function values and closures, keyword
+arguments, destructuring, run-time type annotations, regex helpers, string and
+math builtins, file I/O, and multi-file imports.
 
 ```zng
 let squares = [n * n for n in range(10) if n % 2 == 0]
+let lookup = {n: n * n for n in [1, 2, 3]}
 
 for i, value in ["a", "b"] {
     print(str(i) + ": " + value)
 }
+
+func up_to(n) {
+    let i = 0
+    while i < n { yield i; i = i + 1 }
+}
+print([x for x in up_to(4)])
+
+func typed(a: int, b: int) -> int { return a + b }
+print(typed(b: 2, a: 3))
 
 try {
     throw "something went wrong"
