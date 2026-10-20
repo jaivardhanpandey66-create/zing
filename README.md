@@ -93,7 +93,7 @@ its archive, so the same code always arrives.
 ```zng
 import stats
 
-print(stats.mean([2, 4, 6]))   # 4.0
+print(stats.mean([2, 4, 6]))   // 4.0
 ```
 
 An installed package can also be reached without the prefix. Names starting
@@ -117,8 +117,8 @@ folders, and `zing config registry <url>` should point at your own.
 Classes with inheritance, `try`/`catch`/`finally`, `for` over ranges, lists,
 sets and maps, list and map comprehensions, slicing including negative bounds,
 generators with `yield`, `@decorators`, function values and closures, keyword
-arguments, destructuring, run-time type annotations, regex helpers, string and
-math builtins, file I/O, and multi-file imports.
+arguments, destructuring, run-time type annotations, regex helpers, a `match`
+statement, string and math builtins, file I/O, and multi-file imports.
 
 ```zng
 let squares = [n * n for n in range(10) if n % 2 == 0]
@@ -136,6 +136,14 @@ print([x for x in up_to(4)])
 
 func typed(a: int, b: int) -> int { return a + b }
 print(typed(b: 2, a: 3))
+
+match typed(2, 3) {
+    5 => print("five")
+    n => print("odd: " + str(n))
+}
+
+import py
+print(py.module("math").gcd(12, 18))
 
 try {
     throw "something went wrong"

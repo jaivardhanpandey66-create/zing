@@ -167,7 +167,14 @@ cd zing &amp;&amp; ./install.sh --local .</code>
         <p>Keyword arguments, sets, list and map comprehensions, generators
         with <code>yield</code>, <code>@decorators</code>, function values and
         closures, destructuring like <code>let [a, b] = pair</code>, run-time
-        type annotations, and regex built in.</p>
+        type annotations, a <code>match</code> statement, and regex built in.</p>
+      </div>
+      <div>
+        <h4>Python and C++ when you need them</h4>
+        <p><code>import py</code> reaches any installed Python module directly
+        &mdash; <code>py.module("math").sqrt(2)</code> just works &mdash; while
+        <code>import gpp</code> compiles and runs C++. Both are optional; the
+        language itself needs only Python 3.11+.</p>
       </div>
     </div>
 
@@ -178,6 +185,7 @@ cd zing &amp;&amp; ./install.sh --local .</code>
       <div><h5>Functions</h5><code>func f(a: int, b = 10) -> int {}</code></div>
       <div><h5>Classes</h5><code>class Dog extends Animal { }</code></div>
       <div><h5>Choose</h5><code>if ... elif ... else</code></div>
+      <div><h5>Match</h5><code>match x {<br>1 => a<br>n =&gt; b }</code></div>
       <div><h5>Loop</h5><code>for i in 0..5<br>for x in gen()</code></div>
       <div><h5>Comprehensions</h5><code>[x*x for x in xs]<br>{k: v for k in ks}</code></div>
       <div><h5>Generators</h5><code>func g() { yield 1 }</code></div>
@@ -187,6 +195,7 @@ cd zing &amp;&amp; ./install.sh --local .</code>
       <div><h5>Errors</h5><code>try { } catch e { }</code></div>
       <div><h5>Builtins</h5><code>print len str int push pop range type</code></div>
       <div><h5>Built-ins</h5><code>has keys values sqrt next re_match</code></div>
+      <div><h5>Python</h5><code>import py<br>py.module("math")</code></div>
     </div>
   </section>
 

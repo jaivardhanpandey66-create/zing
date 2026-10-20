@@ -207,5 +207,103 @@ class VersionRanges(unittest.TestCase):
         self.assertIsNone(pkg.resolve_best(versions, "<0.5"))
 
 
+class MatchStatement(unittest.TestCase):
+    def test_literal_arm(self):
+        ok(self, """
+match 2 {
+    1 => print("one")
+    2 => print("two")
+}""", ["two"])
+
+    def test_multiple_patterns_one_arm(self):
+        ok(self, """
+match 3 {
+    1, 2 => print("low")
+    3, 4 => print("high")
+}""", ["high"])
+
+    def test_wildcard_is_the_fallback(self):
+        ok(self, """
+match 9 {
+    1 => print("one")
+    _ => print("other")
+}""", ["other"])
+
+    def test_binding_pattern(self):
+        ok(self, """
+match 7 {
+    n => print("got " + str(n))
+}""", ["got 7"])
+
+    def test_guard_falls_through(self):
+        ok(self, """
+match 3 {
+    n if n > 5 => print("big")
+    n if n > 1 => print("mid")
+    _ => print("small")
+}""", ["mid"])
+
+    def test_no_arm_runs_nothing(self):
+        ok(self, """
+match 5 {
+    1 => print("one")
+}
+print("after")""", ["after"])
+
+    def test_block_body(self):
+        ok(self, """
+match "x" {
+    "x" => {
+        print("a")
+        print("b")
+    }
+}""", ["a", "b"])
+
+    def test_list_pattern(self):
+        ok(self, """
+match [1, 2] {
+    [1, 2] => print("exact")
+    _ => print("no")
+}""", ["exact"])
+
+    def test_yield_inside_match(self):
+        ok(self, """
+func g(xs) {
+    for x in xs {
+        match x {
+            0 => yield "z"
+            _ => yield str(x)
+        }
+    }
+}
+print([s for s in g([0, 5])])""", ["[z, 5]"])
+
+
+class PythonInterop(unittest.TestCase):
+    def test_import_python_module_attribute(self):
+        ok(self, 'import py\nlet m = py.module("math")\n'
+                 'print(m.floor(3.9))', ["3"])
+
+    def test_call_python_function(self):
+        ok(self, 'import py\nlet m = py.module("math")\n'
+                 'print(m.gcd(12, 18))', ["6"])
+
+    def test_py_call_helper(self):
+        ok(self, 'import py\nlet m = py.module("math")\n'
+                 'print(py.call(m, "factorial", 5))', ["120"])
+
+    def test_python_list_comes_back_as_list(self):
+        ok(self, 'import py\nlet j = py.module("json")\n'
+                 'print(j.loads("[1, 2, 3]"))', ["[1, 2, 3]"])
+
+    def test_python_module_constant(self):
+        ok(self, 'import py\nlet m = py.module("math")\n'
+                 'print(m.sqrt(16.0))', ["4.0"])
+
+    def test_unknown_module_is_an_error(self):
+        _, err = run('import py\nlet m = py.module("no_such_mod_xyz")')
+        self.assertIsNotNone(err)
+
+
 if __name__ == "__main__":
     unittest.main()

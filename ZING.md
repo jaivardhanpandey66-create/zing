@@ -86,6 +86,42 @@ Use `break` to stop early and `continue` to skip one iteration.
 
 ---
 
+## 5a. Matching values
+
+`match` compares a value against a list of patterns and runs the first arm
+that fits. Each arm is written `pattern => body`, one per line. A pattern can
+be a literal, several literals separated by commas, a name (which binds the
+value), or `_` for "anything". An optional `if` guard refines an arm, and a
+body in braces lets an arm run several statements.
+
+```zng
+for x in [1, 2, 7, 20] {
+    match x {
+        1 => print("one")
+        2, 3 => print("two or three")
+        n if n > 10 => print("large: " + str(n))
+        _ => print("something else")
+    }
+}
+// one / two or three / something else / large: 20
+```
+
+The first matching arm wins, and if nothing matches, nothing runs. Guards
+fall through: an arm whose guard is false lets the next arm be tried.
+
+```zng
+match "hi" {
+    s if s == "hi" => print("greeting")
+    _ => print("unknown")
+}
+```
+
+A name pattern always matches and binds the whole subject, so put it last if
+you do not want it to shadow literal arms. `match` works inside generators,
+so `yield` may appear in an arm.
+
+---
+
 ## 6. Functions
 
 ```zng
@@ -388,6 +424,41 @@ language itself needs nothing but Python 3.11 or newer, and no network access.
 
 ---
 
+## 16a. Calling Python (optional)
+
+A zing program runs on Python, so it can reach any installed Python module
+directly with `import py`. `py.module(name)` loads a module and returns a
+handle; read its constants and call its functions as if they were yours.
+
+```zng
+import py
+
+let m = py.module("math")
+print(m.floor(3.9))      // 3
+print(m.sqrt(16.0))      // 4.0
+print(m.pi)              // 3.14159...
+
+let j = py.module("json")
+print(j.dumps({name: "zing"}))   // {"name": "zing"}
+```
+
+Values cross the boundary sensibly: Python lists, dicts and sets become zing
+lists, maps and sets, and zing values are converted back on the way in. To
+call a function by a name held in a string, use `py.call(module, name, ...)`:
+
+```zng
+import py
+let m = py.module("math")
+print(py.call(m, "factorial", 5))   // 120
+```
+
+Anything that is not a plain value (a file handle, a socket, a class) comes
+back as an opaque object you can pass around and read attributes from, but
+cannot inspect from zing source. This makes the whole Python standard library
+available without leaving the language.
+
+---
+
 ## 17. Sets, unpacking, generators and regex
 
 ### Sets
@@ -452,6 +523,7 @@ print(re_split("[, ]+", "a, b c"))         // [a, b, c]
 
 ## What comes next
 
-Still planned: a `match` statement, modules with explicit exports, and more
-tooling. `zing fmt` formats a file today; a language server is not written yet.
-Check the tests in `tests/` for the exact current state of the language.
+Module namespaces with explicit `export` lists and submodules are the main
+thing still missing, along with a language server for editor tooling. `zing
+fmt` formats a file today; a type checker is not written yet. Check the tests
+in `tests/` for the exact current state of the language.

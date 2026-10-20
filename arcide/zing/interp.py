@@ -30,7 +30,8 @@ from .parser import (
     Catch,    Throw,    Try,
     Parser,
     Comprehension,
-    Decorated, Destructure, FuncExpr, KeywordArg, Yield,)
+    Decorated, Destructure, FuncExpr, KeywordArg, Yield,
+    Match, MatchArm, Wildcard, PatternVar,)
 
 
 class RuntimeError_(JaiError):
@@ -223,6 +224,25 @@ class Function:
         self.env = env
         self.name = name or decl.name
         self.is_method = decl.is_method
+
+
+class PyModule:
+    """A real Python module, reachable from zing via `import py`."""
+
+    __slots__ = ("mod", "name")
+
+    def __init__(self, mod, name: str = ""):
+        self.mod = mod
+        self.name = name or getattr(mod, "__name__", "<py>")
+
+
+class PyObject:
+    """Any other live Python object we did not convert into a zing value."""
+
+    __slots__ = ("obj",)
+
+    def __init__(self, obj):
+        self.obj = obj
 
 
 class NativeFn:
@@ -883,6 +903,10 @@ class Interpreter:
         if isinstance(v, set):
             return "{" + ", ".join(sorted(self.to_display(x)
                                           for x in v)) + "}"
+        if isinstance(v, PyModule):
+            return f"<Python module {v.name!r}>"
+        if isinstance(v, PyObject):
+            return str(v.obj)
         return str(v)
 
     def truthy(self, v) -> bool:
@@ -1125,8 +1149,43 @@ class Interpreter:
             self.do_import(node, env)
             return None
 
+        if t is Match:
+            self.exec_match(node, env)
+            return None
+
         # expression used as a statement
         self.eval(node, env)
+        return None
+
+    def _match_choice(self, node: Match, env: Env):
+        """Return (scope, body) for the first matching arm, else None."""
+        subject = self.eval(node.subject, env)
+        for arm in node.arms:
+            scope = Env(env)
+            hit = False
+            for pat in arm.patterns:
+                if isinstance(pat, Wildcard):
+                    hit = True
+                    break
+                if isinstance(pat, PatternVar):
+                    scope.define(pat.name, subject)
+                    hit = True
+                    break
+                if self.loose_eq(subject, self.eval(pat, scope)):
+                    hit = True
+                    break
+            if not hit:
+                continue
+            if arm.guard is not None and not self.truthy(
+                    self.eval(arm.guard, scope)):
+                continue
+            return scope, arm.body
+        return None
+
+    def exec_match(self, node: Match, env: Env) -> None:
+        choice = self._match_choice(node, env)
+        if choice is not None:
+            self.exec_stmt(choice[1], choice[0])
         return None
 
     def do_import(self, node: Import, env: Env) -> None:
@@ -1142,6 +1201,12 @@ class Interpreter:
             from . import bridge
 
             env.define("gpp", bridge.make_module())
+            return
+        if name == "py":
+            env.define("py", {
+                "module": NativeFn("py.module", self._py_module),
+                "call": NativeFn("py.call", self._py_call),
+            })
             return
 
         # A user module: import helpers  ->  helpers.zng next to the script.
@@ -1313,7 +1378,64 @@ class Interpreter:
             return key
         return str(key)
 
+    def _py_module(self, name):
+        import importlib
+
+        try:
+            mod = importlib.import_module(str(name))
+        except Exception as e:
+            raise RuntimeError_(
+                f"cannot import Python module {name!r}: {e}") from None
+        return PyModule(mod)
+
+    def _py_call(self, module, name, *args):
+        target = module.mod if isinstance(module, PyModule) else module
+        try:
+            fn = getattr(target, str(name))
+        except AttributeError:
+            raise RuntimeError_(
+                f"no attribute {name!r} to call") from None
+        return self._to_zing(fn(*[self._to_py(a) for a in args]))
+
+    def _to_py(self, value):
+        if isinstance(value, PyObject):
+            return value.obj
+        if isinstance(value, PyModule):
+            return value.mod
+        if isinstance(value, list):
+            return [self._to_py(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self._to_py(v) for k, v in value.items()}
+        if isinstance(value, set):
+            return {self._to_py(v) for v in value}
+        return value
+
+    def _to_zing(self, value):
+        import types
+
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, (list, tuple)):
+            return [self._to_zing(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): self._to_zing(v) for k, v in value.items()}
+        if isinstance(value, (set, frozenset)):
+            return {self._to_zing(v) for v in value}
+        if isinstance(value, types.ModuleType):
+            return PyModule(value)
+        if callable(value):
+            return NativeFn(getattr(value, "__name__", "<py>"), value)
+        return PyObject(value)
+
     def get_attr(self, target, name: str, line: int):
+        if isinstance(target, (PyModule, PyObject)):
+            obj = target.mod if isinstance(target, PyModule) else target.obj
+            try:
+                attr = getattr(obj, name)
+            except AttributeError:
+                raise RuntimeError_(
+                    f"Python object has no attribute {name!r}", line) from None
+            return self._to_zing(attr)
         if isinstance(target, Instance):
             if name in target.vars:
                 return target.vars[name]
@@ -1524,6 +1646,22 @@ class Interpreter:
 
     def call_method(self, node: MethodCall, env: Env):
         target = self.eval(node.target, env)
+        if isinstance(target, (PyModule, PyObject)):
+            obj = target.mod if isinstance(target, PyModule) else target.obj
+            try:
+                fn = getattr(obj, node.name)
+            except AttributeError:
+                raise RuntimeError_(
+                    f"Python object has no method {node.name!r}",
+                    node.line) from None
+            args = [self._to_py(self.eval(a, env)) for a in node.args]
+            try:
+                return self._to_zing(fn(*args))
+            except RuntimeError_:
+                raise
+            except Exception as e:
+                raise RuntimeError_(
+                    f"{node.name}: {e}", node.line) from None
         if isinstance(target, Instance):
             meth = target.cls.find_method(node.name)
             if meth is None:
@@ -1802,6 +1940,11 @@ class Interpreter:
                     return
             if node.orelse is not None:
                 yield from self._gen_walk(node.orelse, Env(env))
+            return
+        if t is Match:
+            choice = self._match_choice(node, env)
+            if choice is not None:
+                yield from self._gen_walk(choice[1], choice[0])
             return
         if t is While:
             while self.truthy(self.eval(node.cond, env)):

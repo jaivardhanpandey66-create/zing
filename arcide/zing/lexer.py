@@ -21,7 +21,7 @@ KEYWORDS = frozenset(
     let var func return class extends new self
     if else elif while for in break continue
     true false null and or not import export from
-    try catch throw finally yield
+    try catch throw finally yield match
     """.split()
 )
 

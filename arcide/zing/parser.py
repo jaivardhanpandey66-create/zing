@@ -137,6 +137,29 @@ class FuncExpr(Node):
 
 
 @dataclass(frozen=True, slots=True)
+class Wildcard(Node):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class PatternVar(Node):
+    name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MatchArm(Node):
+    patterns: tuple = ()
+    guard: object = None
+    body: object = None
+
+
+@dataclass(frozen=True, slots=True)
+class Match(Node):
+    subject: object = None
+    arms: tuple = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Yield(Node):
     value: object = None
 
@@ -494,6 +517,8 @@ class Parser:
                 value = self.expression()
             self.end_statement()
             return Return(line=t.line, value=value)
+        if self.at_kw("match"):
+            return self.match_stmt()
         if self.at_kw("if"):
             return self.if_stmt()
         if self.at_kw("while"):
@@ -652,6 +677,42 @@ class Parser:
             line=t.line, name=str(name.value), parent=parent,
             fields=tuple(fields), methods=tuple(methods),
         )
+
+    def match_pattern(self):
+        t = self.cur
+        if t.kind == "ident" and str(t.value) == "_":
+            self.advance()
+            return Wildcard(line=t.line)
+        if t.kind == "ident":
+            self.advance()
+            return PatternVar(line=t.line, name=str(t.value))
+        return self.expression()
+
+    def match_stmt(self):
+        t = self.expect_kw("match")
+        subject = self.expression()
+        self.expect_op("{")
+        self.skip_newlines()
+        arms = []
+        while not self.at_op("}"):
+            patterns = [self.match_pattern()]
+            while self.accept_op(","):
+                patterns.append(self.match_pattern())
+            guard = None
+            if self.at_kw("if"):
+                self.advance()
+                guard = self.expression()
+            self.expect_op("=>")
+            self.skip_newlines()
+            if self.at_op("{"):
+                body = self.block()
+            else:
+                body = self.statement()
+            arms.append(MatchArm(line=t.line, patterns=tuple(patterns),
+                                 guard=guard, body=body))
+            self.skip_newlines()
+        self.expect_op("}")
+        return Match(line=t.line, subject=subject, arms=tuple(arms))
 
     def if_stmt(self):
         t = self.cur
