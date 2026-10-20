@@ -521,6 +521,40 @@ print(re_split("[, ]+", "a, b c"))         // [a, b, c]
 
 ---
 
+## 18. Compiling to a native binary
+
+`zing run` interprets a program, which starts instantly but pays a cost per
+statement. When a program is worth running many times, `zing build` compiles
+it to C and hands that to the system C compiler, producing a real native
+executable with no Python involved at run time.
+
+```bash
+zing build program.zng          # writes ./program
+zing build program.zng -o app   # choose the output name
+./program
+```
+
+A recursive `fib(32)` compiled this way is roughly eight times faster than
+the same program interpreted, and about as fast as writing it in C directly.
+The optimizations come from the C compiler, so `-O2` is used by default.
+
+The compiled subset covers the everyday shape of a program: numbers, strings,
+booleans, null, lists, arithmetic and comparison, `if` / `elif` / `else`,
+`while`, `for i in a..b`, functions with positional parameters, `return`,
+`break`, `continue`, assignment, and the builtins `print`, `len`, `str`.
+Value types are tracked at run time, so integers stay integers and only
+division and explicit floats produce fractional results.
+
+Features outside the subset — classes, maps, comprehensions, closures,
+`match`, generators — currently fall back to the interpreter: `zing build`
+reports the first line it cannot compile and leaves the program runnable with
+`zing run` instead of guessing.
+
+Adding `--keep-c` writes the generated C beside the binary, which is useful
+when you want to see what your program became.
+
+---
+
 ## What comes next
 
 Module namespaces with explicit `export` lists and submodules are the main

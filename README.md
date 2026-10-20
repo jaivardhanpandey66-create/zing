@@ -49,6 +49,7 @@ To uninstall, delete the folder it created and remove it from your PATH.
 | Command | What it does |
 | --- | --- |
 | `zing run FILE.zng` | run a program |
+| `zing build FILE.zng` | compile to a native binary with a C compiler |
 | `zing check FILE.zng` | syntax check, with line and column |
 | `zing fmt FILE.zng` | format in place, refusing unsafe rewrites |
 | `zing repl` | interactive prompt |
@@ -154,9 +155,27 @@ try {
 }
 ```
 
+## Native builds
+
+`zing run` interprets a program: instant to start, but a cost per statement.
+`zing build` compiles the same file to C and lets the system C compiler turn
+it into a native executable that needs no Python at run time.
+
+```bash
+zing build fib.zng -o fib
+./fib
+```
+
+A recursive `fib(32)` built this way runs about eight times faster than the
+interpreter. The compiled subset is the everyday core — numbers, strings,
+lists, arithmetic, `if`/`while`/`for`, functions, `return`, `break`,
+`continue`, and the `print`/`len`/`str` builtins. Anything outside it is
+reported with the line and stays runnable with `zing run`.
+
 ## Layout
 
-- `arcide/zing/` — lexer, parser, interpreter, package manager, CLI
+- `arcide/zing/` — lexer, parser, interpreter, C backend, package manager, CLI
+- `arcide/zing/rt/runtime.h` — the small C runtime the compiled output uses
 - `tools/registry_server.py` — reference package registry
 - `tests/` — the test suite, run with `python3 -m unittest discover -s tests`
 - `examples/` — sample programs

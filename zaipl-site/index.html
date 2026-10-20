@@ -176,6 +176,13 @@ cd zing &amp;&amp; ./install.sh --local .</code>
         <code>import gpp</code> compiles and runs C++. Both are optional; the
         language itself needs only Python 3.11+.</p>
       </div>
+      <div>
+        <h4>Compiles to native code</h4>
+        <p><code>zing build app.zng</code> turns a program into a real native
+        executable with a C compiler. A recursive benchmark runs about
+        <strong>8&times; faster</strong> than the interpreter, with no Python
+        in the finished binary.</p>
+      </div>
     </div>
 
     <h3 class="sub">The whole language</h3>

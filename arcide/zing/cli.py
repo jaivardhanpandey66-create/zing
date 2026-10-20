@@ -149,6 +149,45 @@ def cmd_check(path: str) -> int:
     return 0
 
 
+def cmd_build(path: str, args: list[str]) -> int:
+    """Compile a program to a native binary via the C backend."""
+    from .compile_c import UnsupportedError, build
+
+    out = None
+    keep_c = False
+    rest = list(args)
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a in ("-o", "--output"):
+            if i + 1 >= len(rest):
+                print(_C["red"] + "zing build: -o needs a path" + _C["off"],
+                      file=sys.stderr)
+                return 2
+            out = rest[i + 1]
+            i += 2
+            continue
+        if a == "--keep-c":
+            keep_c = True
+            i += 1
+            continue
+        print(_C["red"] + f"zing build: unknown option {a!r}" + _C["off"],
+              file=sys.stderr)
+        return 2
+    try:
+        exe = build(path, out_path=out, keep_c=keep_c)
+    except UnsupportedError as e:
+        print(f"{_C['red']}zing build: {e}{_C['off']}", file=sys.stderr)
+        return 2
+    except (LexError, ParseError) as e:
+        return _report(e, path, _read_source(path))
+    except OSError as e:
+        print(f"{_C['red']}zing build: {e}{_C['off']}", file=sys.stderr)
+        return 2
+    print(f"{_C['green']}built{_C['off']} {exe}")
+    return 0
+
+
 def cmd_fmt(path: str) -> int:
     from .fmt import format_source
 
@@ -211,6 +250,7 @@ def cmd_repl() -> int:
 USAGE = f"""{_C['bold']}zing {_C['off']} -- a small language for building things
 
   zing run FILE     run a program ('-' reads stdin)
+  zing build FILE   compile FILE to a native binary with a C compiler
   zing check FILE   check syntax without running
   zing fmt FILE     format the file in place
   zing repl         interactive prompt
@@ -506,6 +546,12 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
         return cmd_check(rest[0])
+    if cmd == "build":
+        if not rest:
+            print(_C["red"] + "zing build: needs a file" + _C["off"],
+                  file=sys.stderr)
+            return 2
+        return cmd_build(rest[0], rest[1:])
     if cmd == "fmt":
         if not rest:
             print(_C["red"] + "zing fmt: needs a file" + _C["off"],
