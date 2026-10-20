@@ -1,0 +1,162 @@
+{
+  "name": "zing",
+  "scopeName": "source.zing",
+  "fileTypes": ["zng"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#decorators" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#builtins" },
+    { "include": "#regex" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.zing",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.zing",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.zing",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.zing",
+          "match": "\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.zing",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "decorators": {
+      "patterns": [
+        {
+          "name": "meta.decorator.zing",
+          "match": "@[A-Za-z_][A-Za-z0-9_]*",
+          "captures": {
+            "0": { "name": "entity.name.function.decorator.zing" }
+          }
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.function.zing",
+          "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.zing" },
+            "2": { "name": "entity.name.function.zing" }
+          }
+        },
+        {
+          "name": "meta.class.zing",
+          "match": "\\b(class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.class.zing" },
+            "2": { "name": "entity.name.type.class.zing" }
+          }
+        },
+        {
+          "name": "meta.import.zing",
+          "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.control.import.zing" },
+            "2": { "name": "entity.name.namespace.zing" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.zing",
+          "match": "\\b(if|else|elif|while|for|in|break|continue|return|yield|match)\\b"
+        },
+        {
+          "name": "keyword.other.zing",
+          "match": "\\b(let|var|func|class|extends|new|self|import|export|from|try|catch|throw|finally|as)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.zing",
+          "match": "\\b(and|or|not)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.zing",
+          "match": "\\b(true|false|null)\\b"
+        },
+        {
+          "name": "constant.language.math.zing",
+          "match": "\\b(PI|E|TAU)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.zing",
+          "match": "\\b(print|len|str|int|float|input|push|pop|range|type|has|keys|values|sqrt|exit|clock|next)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "regex": {
+      "patterns": [
+        {
+          "name": "support.function.regex.zing",
+          "match": "\\b(re_match|re_search|re_replace|re_findall|re_split)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "self": {
+      "patterns": [
+        {
+          "name": "variable.language.self.zing",
+          "match": "\\bself\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.zing",
+          "match": "==|!=|<=|>=|&&|\\|\\||\\+=|-=|\\*=|/=|%=|\\*\\*|\\.\\.|=>|->|[+\\-*/%<>=!&|^]"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.zing",
+          "match": "[{}\\[\\]();:,.]"
+        }
+      ]
+    }
+  }
+}

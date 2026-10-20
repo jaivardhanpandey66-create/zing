@@ -1,0 +1,179 @@
+{
+  "name": "zing",
+  "displayName": "zing",
+  "description": "Language support for zing: syntax highlighting, snippets, run, build and check from the editor.",
+  "version": "0.2.0",
+  "publisher": "zing-lang",
+  "license": "MIT",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#061B2B",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jaivardhanpandey66-create/zing.git"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "zing",
+    ".zng",
+    "language",
+    "interpreter",
+    "compiler"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:zing"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "zing",
+        "aliases": [
+          "zing",
+          "Zing"
+        ],
+        "extensions": [
+          ".zng"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/zing.svg",
+          "dark": "./icons/zing.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "zing",
+        "scopeName": "source.zing",
+        "path": "./syntaxes/zing.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "zing",
+        "path": "./snippets/zing.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "zing.run",
+        "title": "zing: Run File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "zing.build",
+        "title": "zing: Build Native Binary",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "zing.check",
+        "title": "zing: Check for Errors",
+        "icon": "$(check)"
+      },
+      {
+        "command": "zing.format",
+        "title": "zing: Format File",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "zing.showOutput",
+        "title": "zing: Show Output",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "zing.run",
+          "when": "editorLangId == zing",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "zing.check",
+          "when": "editorLangId == zing",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "zing.run",
+          "when": "editorLangId == zing"
+        },
+        {
+          "command": "zing.build",
+          "when": "editorLangId == zing"
+        },
+        {
+          "command": "zing.check",
+          "when": "editorLangId == zing"
+        },
+        {
+          "command": "zing.format",
+          "when": "editorLangId == zing"
+        },
+        {
+          "command": "zing.showOutput",
+          "when": "editorLangId == zing"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "zing.run",
+        "key": "f5",
+        "when": "editorLangId == zing"
+      },
+      {
+        "command": "zing.check",
+        "key": "ctrl+shift+b",
+        "when": "editorLangId == zing"
+      }
+    ],
+    "configuration": {
+      "title": "zing",
+      "properties": {
+        "zing.path": {
+          "type": "string",
+          "default": "zing",
+          "description": "Path to the zing executable. Use an absolute path if it is not on your PATH."
+        },
+        "zing.runOnSaveCheck": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check for syntax errors when a .zng file is saved."
+        },
+        "zing.showInlineErrors": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show zing errors as red squiggles in the editor."
+        },
+        "zing.stopOnError": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stop a run as soon as an error appears instead of waiting for it to finish."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
+  }
+}

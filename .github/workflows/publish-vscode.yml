@@ -1,0 +1,40 @@
+name: Publish VS Code extension
+
+# Runs when you publish a GitHub release, or on demand from the Actions tab.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-zing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm install
+      - run: npm run compile
+
+      # Publish to the VS Code Marketplace. Needs the VSCODE_MARKETPLACE_TOKEN
+      # repository secret (an Azure DevOps PAT with the Marketplace -> Manage
+      # scope, created under "All accessible organizations").
+      - name: Publish to VS Code Marketplace
+        if: ${{ secrets.VSCE_MARKETPLACE_TOKEN != '' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_MARKETPLACE_TOKEN }}
+        run: npx @vscode/vsce publish --no-dependencies
+
+      # Publish to Open VSX (used by VSCodium, Gitpod and others). Needs the
+      # OPEN_VSX_TOKEN repository secret from https://open-vsx.org.
+      - name: Publish to Open VSX
+        if: ${{ secrets.OPEN_VSX_TOKEN != '' }}
+        env:
+          OVSX_PAT: ${{ secrets.OPEN_VSX_TOKEN }}
+        run: npx ovsx publish --no-dependencies
