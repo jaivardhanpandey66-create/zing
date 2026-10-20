@@ -124,9 +124,11 @@ print(mathx.mean([1, 2, 3]))</code>
 
       <div class="card">
         <h3>Any editor</h3>
-        <p>There is a VS Code extension on the Marketplace.</p>
+        <p>A VS Code extension adds highlighting, snippets and run/build from
+        the editor. Install the bundled <code>.vsix</code> today, or search
+        <strong>zing</strong> once it is published to the Marketplace.</p>
         <div class="cmdrow">
-          <code class="cmd">code --install-extension zing.zing</code>
+          <code class="cmd">code --install-extension zing-0.2.0.vsix</code>
           <button class="copy" data-target="">Copy</button>
         </div>
         <p class="fine">Other editors: point your run command at
@@ -212,11 +214,19 @@ cd zing &amp;&amp; ./install.sh --local .</code>
     check, and errors as red squiggles.</p>
     <ul class="ticks">
       <li>Syntax highlighting for every token class the language has</li>
-      <li>Snippets for classes, constructors, loops and maps</li>
+      <li>Snippets for classes, constructors, loops, <code>match</code>,
+      comprehensions, generators and decorators</li>
       <li>Problems parsed from the CLI, never re-implemented in the extension</li>
-      <li><code>zing fmt</code> rewrites the buffer, and refuses to if it
-      would change what the program means</li>
+      <li>Run with <kbd>F5</kbd>, build a native binary, and
+      <code>zing fmt</code> rewrites the buffer, refusing to if it would
+      change what the program means</li>
     </ul>
+    <div class="cmdrow" style="margin-top:1rem">
+      <code class="cmd">code --install-extension zing-0.2.0.vsix</code>
+    </div>
+    <p class="fine">Install the bundled <code>zing-0.2.0.vsix</code> by hand
+    for now; <code>zing-lang.zing</code> will be on the Marketplace shortly.
+    Registers <code>.zng</code> files automatically.</p>
   </section>
 </main>
 
