@@ -164,7 +164,25 @@ def cmd_pack(path: str, args: list[str]) -> int:
         return _report(e, path, src)
 
     stem = Path(path).stem
-    out = Path(path).parent / f"{stem}.zingpack"
+    out_path = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-o" and i + 1 < len(args):
+            out_path = args[i + 1]
+            i += 2
+            continue
+        if a.startswith("--out="):
+            out_path = a.split("=", 1)[1]
+            i += 1
+            continue
+        i += 1
+    if out_path:
+        out = Path(out_path)
+        if out.is_dir():
+            out = out / f"{stem}"
+    else:
+        out = Path(path).parent / f"{stem}.zingpack"
     b64 = base64.b64encode(src.encode("utf-8")).decode("ascii")
 
     launcher = f'''#!/usr/bin/env python3
@@ -218,7 +236,16 @@ finally:
         os.chmod(out, 0o755)
     except Exception:
         pass
-    print(f"{_C['green']}packed{_C['off']} {out} (single file, needs Python 3)")
+    try:
+        sz = out.stat().st_size
+        if sz < 1024:
+            print(f"{_C['green']}packed{_C['off']} {out} ({sz}B, needs Python 3)")
+        elif sz < 1024 * 1024:
+            print(f"{_C['green']}packed{_C['off']} {out} ({sz // 1024}KB, needs Python 3)")
+        else:
+            print(f"{_C['green']}packed{_C['off']} {out} ({sz // (1024 * 1024)}MB, needs Python 3)")
+    except OSError:
+        print(f"{_C['green']}packed{_C['off']} {out} (single file, needs Python 3)")
     return 0
 
 

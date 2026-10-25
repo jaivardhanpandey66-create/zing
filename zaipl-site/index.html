@@ -29,9 +29,10 @@
   <section class="hero">
     <h1>A small language for<br>building things.</h1>
     <p class="lede">
-      Plain text files. No build step. No toolchain to configure before your
-      first program runs. Write <code>.zng</code> in any editor and run it with
-      one command.
+      Use any Python library with <code>import py</code>. Ship a program as one file
+      with <code>zing pack</code>, or compile it to a fully native binary with
+      <code>zing build</code>. Write <code>.zng</code> in any editor and run it
+      with one command.
     </p>
 
     <pre class="sample"><code>class Dog {
@@ -172,11 +173,11 @@ cd zing &amp;&amp; ./install.sh --local .</code>
         type annotations, a <code>match</code> statement, and regex built in.</p>
       </div>
       <div>
-        <h4>Python and C++ when you need them</h4>
+        <h4>Python interop + one-file bundles</h4>
         <p><code>import py</code> reaches any installed Python module directly
-        &mdash; <code>py.module("math").sqrt(2)</code> just works &mdash; while
-        <code>import gpp</code> compiles and runs C++. Both are optional; the
-        language itself needs only Python 3.11+.</p>
+        &mdash; <code>py.module("math").sqrt(2)</code> just works. Bundle tools that
+        use PyPI packages with <code>zing pack</code>, or compile pure programs to
+        a native binary with <code>zing build</code>.</p>
       </div>
       <div>
         <h4>Compiles to native code</h4>

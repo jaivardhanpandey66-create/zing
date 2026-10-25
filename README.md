@@ -155,24 +155,20 @@ try {
 }
 ```
 
-## Native builds
+## Single-file bundles
 
-`zing run` interprets a program: instant to start, but a cost per statement.
-`zing build` compiles the same file to C with `-O3 -march=native` and lets
-the system C compiler turn it into a native executable that needs no Python
-at run time.
+Need to ship something that uses a PyPI package via `import py` but don't want
+to force people to install Zing? `zing pack` bundles the Zing runtime and your
+program into a single self-contained script.
 
 ```bash
-zing build fib.zng -o fib
-./fib
+zing pack app.zng    # writes ./app.zingpack
+./app.zingpack
 ```
 
-A recursive `fib(32)` built this way runs about eight times faster than the
-interpreter. The compiled subset covers numbers, strings, lists, maps,
-indexing and slicing, arithmetic, `if`/`elif`/`else`, `while`, `for`, `match`,
-list and map comprehensions, functions, `return`, `break`, `continue`, and
-the builtins `print`, `len`, `str`, `range`, `has`. Anything outside it is
-reported with the line and a hint to use `zing run` instead.
+It works with `import py`, passes args through, and runs anywhere with Python
+3. For pure programs with no Python interop, `zing build` still produces a
+smaller fully native executable with no Python at run time.
 
 ## Layout
 
