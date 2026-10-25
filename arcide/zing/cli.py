@@ -149,6 +149,37 @@ def cmd_check(path: str) -> int:
     return 0
 
 
+def cmd_init(args: list[str]) -> int:
+    """Initialize a new zing project in the current directory."""
+    import json
+    import os
+    from pathlib import Path
+
+    cwd = Path.cwd()
+    zing_json = cwd / "zing.json"
+    main_zng = cwd / "main.zng"
+
+    if zing_json.exists():
+        print(f"{_C['yellow']}zing init: zing.json already exists{_C['off']}",
+              file=sys.stderr)
+        return 1
+
+    name = cwd.name or "my-project"
+    manifest = {
+        "name": name,
+        "version": "0.1.0",
+        "main": "main.zng",
+    }
+    zing_json.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    if not main_zng.exists():
+        main_zng.write_text('print("hello, zing!")\n', encoding="utf-8")
+
+    print(f"{_C['green']}Created{_C['off']} zing.json and main.zng")
+    print(f"  run: { _C['bold'] }zing run main.zng{ _C['off'] }")
+    return 0
+
+
 def cmd_build(path: str, args: list[str]) -> int:
     """Compile a program to a native binary via the C backend."""
     from .compile_c import UnsupportedError, build
@@ -184,7 +215,16 @@ def cmd_build(path: str, args: list[str]) -> int:
     except OSError as e:
         print(f"{_C['red']}zing build: {e}{_C['off']}", file=sys.stderr)
         return 2
-    print(f"{_C['green']}built{_C['off']} {exe}")
+    try:
+        sz = os.path.getsize(exe)
+        if sz < 1024:
+            print(f"{_C['green']}built{_C['off']} {exe} ({sz}B)")
+        elif sz < 1024 * 1024:
+            print(f"{_C['green']}built{_C['off']} {exe} ({sz // 1024}KB)")
+        else:
+            print(f"{_C['green']}built{_C['off']} {exe} ({sz // (1024 * 1024)}MB)")
+    except OSError:
+        print(f"{_C['green']}built{_C['off']} {exe}")
     return 0
 
 
@@ -253,6 +293,7 @@ USAGE = f"""{_C['bold']}zing {_C['off']} -- a small language for building things
   zing build FILE   compile FILE to a native binary with a C compiler
   zing check FILE   check syntax without running
   zing fmt FILE     format the file in place
+  zing init         create a new zing project in the current directory
   zing repl         interactive prompt
   zing version      print the version
 
@@ -558,6 +599,8 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
         return cmd_fmt(rest[0])
+    if cmd == "init":
+        return cmd_init(rest)
     if cmd == "repl":
         return cmd_repl()
     if cmd == "install":
