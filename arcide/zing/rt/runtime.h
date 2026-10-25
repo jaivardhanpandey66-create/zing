@@ -104,6 +104,42 @@ static void z_list_push(ZValue list, ZValue item) {
     l->items[l->len++] = item;
 }
 
+/* ---- maps: a small string-keyed table ---- */
+
+static ZValue z_map(void) {
+    ZMap *m = (ZMap *)malloc(sizeof(ZMap));
+    m->cap = 8;
+    m->len = 0;
+    m->keys = (char **)calloc(m->cap, sizeof(char *));
+    m->vals = (ZValue *)malloc(sizeof(ZValue) * m->cap);
+    ZValue v; v.kind = Z_MAP; v.as.m = m; return v;
+}
+
+static long z_map_find(ZMap *m, const char *key) {
+    for (size_t i = 0; i < m->len; i++)
+        if (strcmp(m->keys[i], key) == 0) return (long)i;
+    return -1;
+}
+
+static void z_map_put(ZValue map, const char *key, ZValue val) {
+    ZMap *m = map.as.m;
+    long at = z_map_find(m, key);
+    if (at >= 0) { m->vals[at] = val; return; }
+    if (m->len == m->cap) {
+        m->cap *= 2;
+        m->keys = (char **)realloc(m->keys, sizeof(char *) * m->cap);
+        m->vals = (ZValue *)realloc(m->vals, sizeof(ZValue) * m->cap);
+    }
+    m->keys[m->len] = strdup(key);
+    m->vals[m->len] = val;
+    m->len++;
+}
+
+static int z_map_has(ZValue map, const char *key) {
+    return z_map_find(map.as.m, key) >= 0;
+}
+
+
 /* ---- truthiness and equality ---- */
 
 static int z_truthy(ZValue v) {
@@ -133,7 +169,13 @@ static int z_eq(ZValue a, ZValue b) {
         case Z_STR:
             return a.as.s->len == b.as.s->len &&
                    memcmp(a.as.s->data, b.as.s->data, a.as.s->len) == 0;
-        default: return a.as.i == b.as.i; /* identity for heap kinds */
+        case Z_LIST: {
+            if (a.as.l->len != b.as.l->len) return 0;
+            for (size_t i = 0; i < a.as.l->len; i++)
+                if (!z_eq(a.as.l->items[i], b.as.l->items[i])) return 0;
+            return 1;
+        }
+        default: return a.as.i == b.as.i; /* identity for maps */
     }
 }
 
@@ -286,6 +328,93 @@ static ZValue z_print_multi(int count, ...) {
     }
     va_end(ap);
     printf("\n");
+    return z_null();
+}
+
+/* ---- map and index helpers (need z_to_str and z_to_int above) ---- */
+
+static ZValue z_map_get(ZValue map, const char *key) {
+    long at = z_map_find(map.as.m, key);
+    return at >= 0 ? map.as.m->vals[at] : z_null();
+}
+
+/* Any value used as a map key becomes its text form, matching the
+ * interpreter's treatment of bare-name keys in a map literal. */
+static ZValue z_key_str(ZValue key) {
+    return z_to_str(key);
+}
+
+static ZValue z_index_get(ZValue target, ZValue key) {
+    if (target.kind == Z_LIST) {
+        long long i = z_to_int(key);
+        long long n = (long long)target.as.l->len;
+        if (i < 0) i += n;
+        if (i < 0 || i >= n) return z_null();
+        return target.as.l->items[i];
+    }
+    if (target.kind == Z_STR) {
+        long long i = z_to_int(key);
+        long long n = (long long)target.as.s->len;
+        if (i < 0) i += n;
+        if (i < 0 || i >= n) return z_null();
+        return z_str(target.as.s->data + i, 1);
+    }
+    return z_null();
+}
+
+static void z_index_set(ZValue target, ZValue key, ZValue val) {
+    if (target.kind != Z_LIST) return;
+    long long i = z_to_int(key);
+    long long n = (long long)target.as.l->len;
+    if (i < 0) i += n;
+    if (i < 0 || i >= n) return;
+    target.as.l->items[i] = val;
+}
+
+/* range(a, b, step): a list of numbers, matching the interpreter. A single
+ * argument means 0..a; the step defaults to 1 and may be negative. */
+static ZValue z_range3(long long start, long long stop, long long step) {
+    ZValue out = z_list();
+    if (step == 0) return out;
+    if (step > 0) {
+        for (long long i = start; i < stop; i += step)
+            z_list_push(out, z_int(i));
+    } else {
+        for (long long i = start; i > stop; i += step)
+            z_list_push(out, z_int(i));
+    }
+    return out;
+}
+
+/* Normalize a slice bound: negative counts from the end, and everything is
+ * clamped into [0, size]. A larger-than-size bound just means "the end". */static long long z_slice_bound(long long v, long long size) {
+    if (v < 0) v += size;
+    if (v < 0) return 0;
+    if (v > size) return size;
+    return v;
+}
+
+/* xs[a:b] on a list or string. `has_start`/`has_stop` say whether the bound
+ * was written; a missing bound means 0 or the end respectively. */
+static ZValue z_slice(ZValue target, int has_start, long long start,
+                      int has_stop, long long stop) {
+    if (target.kind == Z_LIST) {
+        long long size = (long long)target.as.l->len;
+        long long a = has_start ? z_slice_bound(start, size) : 0;
+        long long b = has_stop ? z_slice_bound(stop, size) : size;
+        if (b < a) b = a;
+        ZValue out = z_list();
+        for (long long i = a; i < b; i++)
+            z_list_push(out, target.as.l->items[i]);
+        return out;
+    }
+    if (target.kind == Z_STR) {
+        long long size = (long long)target.as.s->len;
+        long long a = has_start ? z_slice_bound(start, size) : 0;
+        long long b = has_stop ? z_slice_bound(stop, size) : size;
+        if (b < a) b = a;
+        return z_str(target.as.s->data + a, (size_t)(b - a));
+    }
     return z_null();
 }
 

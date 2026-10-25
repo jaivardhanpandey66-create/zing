@@ -27,8 +27,9 @@ import tempfile
 from pathlib import Path
 
 from .parser import (
-    Assign, Binary, Block, Break, Call, Continue, For, FuncDecl, If,
-    Let, ListLit, Literal, Logical, Program, Return, Unary, Var, While,
+    Assign, Binary, Block, Break, Call, Comprehension, Continue, For,
+    FuncDecl, If, Import, Index, Let, ListLit, Literal, Logical, MapLit, Match,
+    PatternVar, Program, Return, Unary, Var, While, Wildcard,
 )
 
 RUNTIME = Path(__file__).resolve().parent / "rt" / "runtime.h"
@@ -37,9 +38,14 @@ RUNTIME = Path(__file__).resolve().parent / "rt" / "runtime.h"
 class UnsupportedError(Exception):
     """The program uses a feature the C backend does not compile yet."""
 
-    def __init__(self, what: str, line: int = 0):
-        text = (f"line {line}: {what} is not supported by `zing build`"
-                if line else f"{what} is not supported by `zing build`")
+    def __init__(self, what: str, line: int = 0, hint: str = ""):
+        if line:
+            text = f"line {line}: `{what}` is not supported by `zing build`"
+        else:
+            text = f"`{what}` is not supported by `zing build`"
+        if hint:
+            text += f"\n{hint}"
+        text += "\n  hint: use `zing run` to interpret this program instead"
         super().__init__(text)
         self.what = what
         self.line = line
@@ -138,10 +144,19 @@ class CCompiler:
             tmp = self.expr(node.value)
             self.emit(f"{r}ZValue {node.name} = {tmp};")
         elif isinstance(node, Assign):
-            if not isinstance(node.target, Var):
-                raise UnsupportedError("assignment to a non-variable", node.line)
-            tmp = self.expr(node.value)
-            self.emit(f"{r}{node.target.name} = {tmp};")
+            tt = node.target
+            if isinstance(tt, Var):
+                tmp = self.expr(node.value)
+                self.emit(f"{r}{tt.name} = {tmp};")
+            elif isinstance(tt, Index):
+                if tt.is_slice:
+                    raise UnsupportedError("assigning to a slice", node.line)
+                tgt = self.expr(tt.target)
+                key = self._operand(tt.key)
+                val = self.expr(node.value)
+                self._emit_index_set(tt, tgt, key, val)
+            else:
+                raise UnsupportedError("assignment to this target", node.line)
         elif isinstance(node, Return):
             if node.value is None:
                 self.emit(f"{r}return z_null();")
@@ -171,6 +186,8 @@ class CCompiler:
             self.emit(f"{r}}}")
         elif isinstance(node, For):
             self.emit_for(node, depth)
+        elif isinstance(node, Match):
+            self.emit_match(node, depth)
         elif isinstance(node, Break):
             if not self.loop_depth:
                 raise UnsupportedError("break outside a loop", node.line)
@@ -182,16 +199,73 @@ class CCompiler:
         elif isinstance(node, Call):
             tmp = self.expr(node)
             self.emit(f"{r}(void){tmp};")
+        elif isinstance(node, Import):
+            raise UnsupportedError("import", node.line)
         else:
             raise UnsupportedError(type(node).__name__,
                                    getattr(node, "line", 0))
+
+    def emit_match(self, node: Match, depth: int) -> None:
+        r = "    " * depth
+        subject = self.expr(node.subject)
+        subj = self.fresh("subj")
+        self.emit(f"{r}ZValue {subj} = {subject};")
+        self.emit(f"{r}int _matched = 0;")
+        for i, arm in enumerate(node.arms):
+            self.emit(f"{r}if (!_matched) {{")
+            inner = depth + 1
+            ir = "    " * inner
+            # A guard and the pattern test are combined into one condition.
+            # A binding pattern (a name or `_`) also names the subject, so the
+            # binding is declared before the condition is evaluated.
+            tests: list[str] = []
+            bindings: list[str] = []
+            for pat in arm.patterns:
+                if isinstance(pat, Wildcard):
+                    tests.append("1")
+                    break
+                if isinstance(pat, PatternVar):
+                    bindings.append(pat.name)
+                    tests.append("1")
+                    break
+                p = self._operand(pat)
+                tests.append(f"z_eq({subj}, {p})")
+            for name in bindings:
+                self.emit(f"{ir}ZValue {name} = {subj};")
+            cond = " || ".join(tests) if tests else "0"
+            if arm.guard is not None:
+                g = self._operand(arm.guard)
+                cond = f"({cond}) && z_truthy({g})"
+            self.emit(f"{ir}if ({cond}) {{")
+            self.emit(f"{ir}    _matched = 1;")
+            self.stmt(arm.body, inner + 1)
+            self.emit(f"{ir}}}")
+            self.emit(f"{r}}}")
 
     def emit_for(self, node: For, depth: int) -> None:
         r = "    " * depth
         if node.var2:
             raise UnsupportedError("`for i, v in` with two variables", node.line)
         if node.start is None:
-            raise UnsupportedError("`for` over a sequence", node.line)
+            raise UnsupportedError("`for` with no sequence", node.line)
+        if node.stop is None:
+            # `for x in seq` over a list or string.
+            seq = self.expr(node.start)
+            tmp = self.fresh("seq")
+            idx = self.fresh("i")
+            self.emit(f"{r}ZValue {tmp} = {seq};")
+            self.emit(f"{r}for (long long {idx} = 0;"
+                      f" {idx} < z_len({tmp}); {idx}++) {{")
+            self.emit(f"{r}    ZValue {node.var} ="
+                      f" (({tmp}).kind == Z_STR)"
+                      f" ? z_index_get({tmp}, z_int({idx}))"
+                      f" : ({tmp}).as.l->items[{idx}];")
+            self.loop_depth += 1
+            self.stmt(node.body, depth + 1)
+            self.loop_depth -= 1
+            self.emit(f"{r}}}")
+            return
+        # `for i in a..b`
         start = self.expr(node.start)
         stop = self.expr(node.stop)
         self.emit(f"{r}for (long long _i = z_to_int({start});"
@@ -210,6 +284,12 @@ class CCompiler:
             return node.name
         if isinstance(node, ListLit):
             return self._list_literal(node)
+        if isinstance(node, MapLit):
+            return self._map_literal(node)
+        if isinstance(node, Index):
+            return self._index(node)
+        if isinstance(node, Comprehension):
+            return self._comprehension(node)
         if isinstance(node, Unary):
             return self._unary(node)
         if isinstance(node, Binary):
@@ -235,12 +315,61 @@ class CCompiler:
             return f"z_str_cstr({_cstr(v)})"
         raise UnsupportedError("this literal", node.line)
 
+    def _emit_index_set(self, node: Index, tgt: str, key: str,
+                        val: str) -> None:
+        """Emit list[i] = v or m["k"] = v depending on the container."""
+        self.emit(f"    if (({tgt}).kind == Z_MAP) {{")
+        self.emit(f"        ZValue _k = z_key_str({key});")
+        self.emit(f"        z_map_put({tgt}, _k.as.s->data, {val});")
+        self.emit(f"    }} else {{")
+        self.emit(f"        z_index_set({tgt}, {key}, {val});")
+        self.emit(f"    }}")
+
     def _list_literal(self, node: ListLit) -> str:
         tmp = self.fresh("list")
         self.emit(f"    ZValue {tmp} = z_list();")
         for it in node.items:
             item = self.expr(it)
             self.emit(f"    z_list_push({tmp}, {item});")
+        return tmp
+
+    def _map_key_text(self, key_node) -> str:
+        """A map literal key is literal text, matching the interpreter."""
+        if isinstance(key_node, Var):
+            return key_node.name
+        if isinstance(key_node, Literal) and isinstance(key_node.value, str):
+            return key_node.value
+        raise UnsupportedError("this map key (use a name or a string)",
+                               getattr(key_node, "line", 0))
+
+    def _map_literal(self, node: MapLit) -> str:
+        tmp = self.fresh("map")
+        self.emit(f"    ZValue {tmp} = z_map();")
+        for key_node, val_node in node.pairs:
+            key = self._map_key_text(key_node)
+            val = self.expr(val_node)
+            self.emit(f"    z_map_put({tmp}, {_cstr(key)}, {val});")
+        return tmp
+
+    def _index(self, node: Index) -> str:
+        target = self.expr(node.target)
+        if node.is_slice:
+            has_start = node.key is not None
+            has_stop = node.stop is not None
+            start = self._operand(node.key) if has_start else "z_int(0)"
+            stop = self._operand(node.stop) if has_stop else "z_int(0)"
+            tmp = self.fresh("slice")
+            self.emit(f"    ZValue {tmp} = z_slice({target},"
+                      f" {1 if has_start else 0}, z_to_int({start}),"
+                      f" {1 if has_stop else 0}, z_to_int({stop}));")
+            return tmp
+        key = self._operand(node.key)
+        tmp = self.fresh("idx")
+        keystr = self.fresh("k")
+        self.emit(f"    ZValue {keystr} = z_key_str({key});")
+        self.emit(f"    ZValue {tmp} = (({target}).kind == Z_MAP)")
+        self.emit(f"        ? z_map_get({target}, {keystr}.as.s->data)")
+        self.emit(f"        : z_index_get({target}, {key});")
         return tmp
 
     def _unary(self, node: Unary) -> str:
@@ -270,6 +399,39 @@ class CCompiler:
         if op in ("<", "<=", ">", ">="):
             return f"z_bool(z_to_float({a}) {op} z_to_float({b}))"
         raise UnsupportedError(f"operator {op!r}", node.line)
+
+    def _comprehension(self, node: Comprehension) -> str:
+        if node.nested is not None or node.var2:
+            raise UnsupportedError("nested or multi-variable comprehensions",
+                                   node.line)
+        seq = self.expr(node.seq)
+        tmp = self.fresh("seq")
+        self.emit(f"    ZValue {tmp} = {seq};")
+        out = self.fresh("comp")
+        if node.is_map:
+            self.emit(f"    ZValue {out} = z_map();")
+        else:
+            self.emit(f"    ZValue {out} = z_list();")
+        idx = self.fresh("ci")
+        self.emit(f"    for (long long {idx} = 0; {idx} < z_len({tmp});"
+                  f" {idx}++) {{")
+        self.emit(f"        ZValue {node.var} = (({tmp}).kind == Z_STR)")
+        self.emit(f"            ? z_index_get({tmp}, z_int({idx}))")
+        self.emit(f"            : ({tmp}).as.l->items[{idx}];")
+        for cond in node.conditions:
+            c = self._operand(cond)
+            self.emit(f"        if (!z_truthy({c})) continue;")
+        if node.is_map:
+            key = self._operand(node.key)
+            k = self.fresh("ck")
+            self.emit(f"        ZValue {k} = z_key_str({key});")
+            val = self._operand(node.element)
+            self.emit(f"        z_map_put({out}, {k}.as.s->data, {val});")
+        else:
+            val = self._operand(node.element)
+            self.emit(f"        z_list_push({out}, {val});")
+        self.emit(f"    }}")
+        return out
 
     def _operand(self, node) -> str:
         """Evaluate an operand into a named temporary.
@@ -312,7 +474,32 @@ class CCompiler:
             self.emit(f"    ZValue {tmp} = z_to_str({args[0]});")
             return tmp
         if name == "range":
-            raise UnsupportedError("range() (use `for i in a..b`)", node.line)
+            if len(args) not in (1, 2):
+                raise UnsupportedError("range with that many arguments",
+                                       node.line)
+            tmp = self.fresh("rng")
+            if len(args) == 1:
+                self.emit(f"    ZValue {tmp} ="
+                          f" z_range3(0, z_to_int({args[0]}), 1);")
+            else:
+                self.emit(f"    ZValue {tmp} ="
+                          f" z_range3(z_to_int({args[0]}),"
+                          f" z_to_int({args[1]}), 1);")
+            return tmp
+        if name == "has":
+            if len(args) != 2:
+                raise UnsupportedError("has with that many arguments",
+                                       node.line)
+            container, key = args
+            tmp = self.fresh("has")
+            keystr = self.fresh("hk")
+            self.emit(f"    ZValue {keystr} = z_key_str({key});")
+            self.emit(f"    ZValue {tmp} = z_bool("
+                      f"(({container}).kind == Z_MAP)")
+            self.emit(f"        ? z_map_has({container}, {keystr}.as.s->data)")
+            self.emit(f"        : (z_to_int({key}) >= 0 &&"
+                      f" z_to_int({key}) < z_len({container})));")
+            return tmp
         if name in self.funcs:
             tmp = self.fresh("call")
             self.emit(f"    ZValue {tmp} = {self._mangle(name)}"
@@ -351,7 +538,7 @@ def build(source_path: str, out_path: str | None = None,
     with tempfile.TemporaryDirectory() as tmp:
         cfile = Path(tmp) / "program.c"
         cfile.write_text(c_source, encoding="utf-8")
-        cmd = [cc, "-O2", "-I", str(RUNTIME.parent), str(cfile),
+        cmd = [cc, "-O3", "-march=native", "-I", str(RUNTIME.parent), str(cfile),
                "-o", exe, "-lm"]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:

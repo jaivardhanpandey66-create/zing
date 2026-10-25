@@ -181,7 +181,9 @@ cd zing &amp;&amp; ./install.sh --local .</code>
       <div>
         <h4>Compiles to native code</h4>
         <p><code>zing build app.zng</code> turns a program into a real native
-        executable with a C compiler. A recursive benchmark runs about
+        executable with a C compiler (<code>-O3 -march=native</code>). Maps,
+        indexing, slicing, <code>match</code>, list and map comprehensions and
+        more compile natively. A recursive benchmark runs about
         <strong>8&times; faster</strong> than the interpreter, with no Python
         in the finished binary.</p>
       </div>

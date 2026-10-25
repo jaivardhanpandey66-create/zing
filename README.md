@@ -158,8 +158,9 @@ try {
 ## Native builds
 
 `zing run` interprets a program: instant to start, but a cost per statement.
-`zing build` compiles the same file to C and lets the system C compiler turn
-it into a native executable that needs no Python at run time.
+`zing build` compiles the same file to C with `-O3 -march=native` and lets
+the system C compiler turn it into a native executable that needs no Python
+at run time.
 
 ```bash
 zing build fib.zng -o fib
@@ -167,10 +168,11 @@ zing build fib.zng -o fib
 ```
 
 A recursive `fib(32)` built this way runs about eight times faster than the
-interpreter. The compiled subset is the everyday core — numbers, strings,
-lists, arithmetic, `if`/`while`/`for`, functions, `return`, `break`,
-`continue`, and the `print`/`len`/`str` builtins. Anything outside it is
-reported with the line and stays runnable with `zing run`.
+interpreter. The compiled subset covers numbers, strings, lists, maps,
+indexing and slicing, arithmetic, `if`/`elif`/`else`, `while`, `for`, `match`,
+list and map comprehensions, functions, `return`, `break`, `continue`, and
+the builtins `print`, `len`, `str`, `range`, `has`. Anything outside it is
+reported with the line and a hint to use `zing run` instead.
 
 ## Layout
 
