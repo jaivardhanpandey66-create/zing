@@ -6,7 +6,8 @@ A short tour of the language. Everything here is tested and working today.
 zing run program.zng     # run a file
 zing build program.zng   # compile to a native binary
 zing pack program.zng    # bundle into a single file (works with import py)
-zing init                # scaffold a project
+zing init                # scaffold in current dir
+zing new myapp           # create a new project folder
 zing repl               # interactive prompt
 ```
 

@@ -36,6 +36,14 @@ The PowerShell script downloads the Python runtime and the language, then puts
 `zing` on your PATH. It needs no administrator rights, and if you already have
 Python 3.11 or newer it uses that instead of downloading a second copy.
 
+## Getting started
+
+```bash
+zing init        # scaffold in current dir
+zing new myapp   # create myapp/ with zing.json and main.zng
+zing run main.zng
+```
+
 From a checkout:
 
 ```sh

@@ -280,6 +280,37 @@ def cmd_init(args: list[str]) -> int:
     return 0
 
 
+def cmd_new(args: list[str]) -> int:
+    """Create a new zing project in a subdirectory."""
+    import json
+    from pathlib import Path
+
+    if not args or not args[0].strip():
+        print(f"{_C['red']}zing new: needs a project name{_C['off']}", file=sys.stderr)
+        print(f"  example: { _C['bold'] }zing new myapp{ _C['off'] }", file=sys.stderr)
+        return 2
+
+    name = args[0].strip().strip("/").strip("\\")
+    if "/" in name or "\\" in name or name in (".", ".."):
+        print(f"{_C['red']}zing new: invalid project name{_C['off']}", file=sys.stderr)
+        return 2
+
+    cwd = Path.cwd()
+    proj = cwd / name
+    if proj.exists():
+        print(f"{_C['yellow']}zing new: {proj} already exists{_C['off']}", file=sys.stderr)
+        return 1
+
+    proj.mkdir(parents=True)
+    manifest = {"name": name, "version": "0.1.0", "main": "main.zng"}
+    (proj / "zing.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (proj / "main.zng").write_text('print("hello, zing!")\n', encoding="utf-8")
+
+    print(f"{_C['green']}Created{_C['off']} {name}/ with zing.json and main.zng")
+    print(f"  cd {name} && { _C['bold'] }zing run main.zng{ _C['off'] }")
+    return 0
+
+
 def cmd_build(path: str, args: list[str]) -> int:
     """Compile a program to a native binary via the C backend."""
     from .compile_c import UnsupportedError, build
@@ -395,6 +426,7 @@ USAGE = f"""{_C['bold']}zing {_C['off']} -- a small language for building things
   zing check FILE   check syntax without running
   zing fmt FILE     format the file in place
   zing init         create a new zing project in the current directory
+  zing new NAME     create a new zing project in a subdirectory
   zing repl         interactive prompt
   zing version      print the version
 
@@ -708,6 +740,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_fmt(rest[0])
     if cmd == "init":
         return cmd_init(rest)
+    if cmd == "new":
+        return cmd_new(rest)
     if cmd == "repl":
         return cmd_repl()
     if cmd == "install":
