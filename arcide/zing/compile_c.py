@@ -416,8 +416,15 @@ class CCompiler:
                 emit_if(0, depth)
         elif isinstance(node, While):
             self.emit(f"{r}for (;;) {{")
-            tmp = self.expr(node.cond)
-            self.emit(f"{r}    if (!z_truthy({tmp})) break;")
+            ct = self._expr_type(node.cond)
+            if ct == 'bool':
+                tmp = self._expr_typed(node.cond,'bool'); self.emit(f"{r}    if (!({tmp})) break;")
+            elif ct == 'int':
+                tmp = self._expr_typed(node.cond,'int'); self.emit(f"{r}    if (!({tmp})) break;")
+            elif ct == 'float':
+                tmp = self._expr_typed(node.cond,'float'); self.emit(f"{r}    if (!({tmp} != 0.0)) break;")
+            else:
+                tmp = self.expr(node.cond); self.emit(f"{r}    if (!z_truthy({tmp})) break;")
             self.loop_depth += 1
             self.stmt(node.body, depth + 1)
             self.loop_depth -= 1
@@ -543,6 +550,7 @@ class CCompiler:
         if isinstance(node, New):
             return self._new_expr(node)
         if isinstance(node, MethodCall):
+            # method calls return ZValue in current backend
             return self._method_call(node)
         if isinstance(node, Attribute):
             return self._attribute(node)
@@ -746,11 +754,11 @@ class CCompiler:
             if vt == want:
                 return node.name
             if vt and vt != want:
-                # coerce known typed var to wanted C type
-                if want == 'int' and vt == 'float': return f"((long long){node.name})"
-                if want == 'float' and vt == 'int': return f"((double){node.name})"
+                if want == 'int' and vt == 'float': return f"((long long)({node.name}))"
+                if want == 'float' and vt == 'int': return f"((double)({node.name}))"
                 if want == 'bool': return f"(({node.name}) ? 1 : 0)"
-                if want in ('int','float') and vt == 'bool': return f"({want == 'float' and '(double)' or '(long long)'}{node.name})"
+                if want == 'int' and vt == 'bool': return f"((long long)({node.name}))"
+                if want == 'float' and vt == 'bool': return f"((double)({node.name}))"
         if t is Binary:
             op = node.op
             if want == 'bool' and op in ('<','<=','>','>=','==','!='):
@@ -768,12 +776,11 @@ class CCompiler:
             if want in ('int','float') and op in ('+','-','*','/','%'):
                 lt = self._expr_type(node.left); rt = self._expr_type(node.right)
                 if lt in ('int','float') and rt in ('int','float'):
-                    a = self._expr_typed(node.left,'float'); b = self._expr_typed(node.right,'float')
-                    cop = '/' if op == '/' else op
-                    if want == 'int' and cop != '/':
+                    if want == 'int' and op != '/':
                         a = self._expr_typed(node.left,'int'); b = self._expr_typed(node.right,'int')
-                        return f"(({a}) {cop} ({b}))"
-                    return f"(({a}) {cop} ({b}))"
+                        return f"(({a}) {op} ({b}))"
+                    a = self._expr_typed(node.left,'float'); b = self._expr_typed(node.right,'float')
+                    return f"(({a}) {op} ({b}))"
         if t is Unary and node.op == '-' and want == 'int' and self._expr_type(node.operand)=='int':
             return f"(-({self._expr_typed(node.operand,'int')}))"
         if t is Call and isinstance(node.func, Var):
@@ -787,12 +794,11 @@ class CCompiler:
                 tmp = self.fresh("scall")
                 self.emit(f"    {self._ctype(want)} {tmp} = {self._mangle(node.func.name)}({', '.join(args)});")
                 return tmp
-        # fallback
         ex = self.expr(node)
-        if isinstance(ex, str) and ex in self.var_types and self.var_types[ex] != '':
+        if isinstance(ex, str) and ex in self.var_types and self.var_types[ex]:
             vt = self.var_types[ex]
-            if want == 'int' and vt == 'float': return f"((long long){ex})"
-            if want == 'float' and vt == 'int': return f"((double){ex})"
+            if want == 'int' and vt == 'float': return f"((long long)({ex}))"
+            if want == 'float' and vt == 'int': return f"((double)({ex}))"
             if want == 'bool': return f"(({ex}) ? 1 : 0)"
         return self._unwrap(ex, want)
 
