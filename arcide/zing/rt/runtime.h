@@ -24,7 +24,8 @@ typedef enum {
     Z_FLOAT,
     Z_STR,
     Z_LIST,
-    Z_MAP
+    Z_MAP,
+    Z_OBJ
 } ZKind;
 
 typedef struct ZValue ZValue;
@@ -50,6 +51,11 @@ typedef struct {
     size_t cap;
 } ZMap;
 
+typedef struct {
+    int class_id;
+    ZMap *fields;
+} ZObj;
+
 struct ZValue {
     ZKind kind;
     union {
@@ -59,6 +65,7 @@ struct ZValue {
         ZStr *s;
         ZList *l;
         ZMap *m;
+        ZObj *o;
     } as;
 };
 
@@ -139,6 +146,45 @@ static int z_map_has(ZValue map, const char *key) {
     return z_map_find(map.as.m, key) >= 0;
 }
 
+static ZValue z_map_get(ZValue map, const char *key) {
+    long at = z_map_find(map.as.m, key);
+    return at >= 0 ? map.as.m->vals[at] : z_null();
+}
+
+static ZValue z_obj(int class_id);
+static ZValue z_obj_get(ZValue obj, const char *key);
+static void z_obj_set(ZValue obj, const char *key, ZValue val);
+
+static ZValue z_obj(int class_id) {
+    ZObj *o = (ZObj *)malloc(sizeof(ZObj));
+    o->class_id = class_id;
+    ZValue mf = z_map();
+    o->fields = mf.as.m;
+    ZValue v; v.kind = Z_OBJ; v.as.o = o; return v;
+}
+
+static ZValue z_obj_get(ZValue obj, const char *key) {
+    if (obj.kind != Z_OBJ) return z_null();
+    ZValue m = z_map(); /* dummy? no */
+    long at = z_map_find(obj.as.o->fields, key);
+    return at >= 0 ? obj.as.o->fields->vals[at] : z_null();
+}
+
+static void z_obj_set(ZValue obj, const char *key, ZValue val) {
+    if (obj.kind != Z_OBJ) return;
+    ZMap *m = obj.as.o->fields;
+    long at = z_map_find(m, key);
+    if (at >= 0) { m->vals[at] = val; return; }
+    if (m->len == m->cap) {
+        m->cap *= 2;
+        m->keys = (char **)realloc(m->keys, sizeof(char *) * m->cap);
+        m->vals = (ZValue *)realloc(m->vals, sizeof(ZValue) * m->cap);
+    }
+    m->keys[m->len] = strdup(key);
+    m->vals[m->len] = val;
+    m->len++;
+}
+
 
 /* ---- truthiness and equality ---- */
 
@@ -151,6 +197,7 @@ static int z_truthy(ZValue v) {
         case Z_STR: return v.as.s->len != 0;
         case Z_LIST: return v.as.l->len != 0;
         case Z_MAP: return v.as.m->len != 0;
+        case Z_OBJ: return 1;
     }
     return 0;
 }
@@ -169,12 +216,15 @@ static int z_eq(ZValue a, ZValue b) {
         case Z_STR:
             return a.as.s->len == b.as.s->len &&
                    memcmp(a.as.s->data, b.as.s->data, a.as.s->len) == 0;
-        case Z_LIST: {
-            if (a.as.l->len != b.as.l->len) return 0;
-            for (size_t i = 0; i < a.as.l->len; i++)
-                if (!z_eq(a.as.l->items[i], b.as.l->items[i])) return 0;
+        case Z_MAP: {
+            if (a.as.m->len != b.as.m->len) return 0;
+            for (size_t i = 0; i < a.as.m->len; i++) {
+                long at = z_map_find(b.as.m, a.as.m->keys[i]);
+                if (at < 0 || !z_eq(a.as.m->vals[i], b.as.m->vals[at])) return 0;
+            }
             return 1;
         }
+        case Z_OBJ: return a.as.o == b.as.o;
         default: return a.as.i == b.as.i; /* identity for maps */
     }
 }
@@ -221,6 +271,7 @@ static void z_print_value(ZValue v) {
             printf("}");
             break;
         }
+        case Z_OBJ: printf("<obj>"); break;
     }
 }
 
@@ -291,6 +342,7 @@ static ZValue z_to_str(ZValue v) {
                 n = snprintf(buf, sizeof buf, "%g", f);
             break;
         }
+        case Z_OBJ: return z_str_cstr("<obj>");
         default: return z_str_cstr("");
     }
     return z_str(buf, (size_t)n);
@@ -314,6 +366,7 @@ static long long z_len(ZValue v) {
         case Z_STR: return (long long)v.as.s->len;
         case Z_LIST: return (long long)v.as.l->len;
         case Z_MAP: return (long long)v.as.m->len;
+        case Z_OBJ: return (long long)v.as.o->fields->len;
         default: return 0;
     }
 }
@@ -332,11 +385,6 @@ static ZValue z_print_multi(int count, ...) {
 }
 
 /* ---- map and index helpers (need z_to_str and z_to_int above) ---- */
-
-static ZValue z_map_get(ZValue map, const char *key) {
-    long at = z_map_find(map.as.m, key);
-    return at >= 0 ? map.as.m->vals[at] : z_null();
-}
 
 /* Any value used as a map key becomes its text form, matching the
  * interpreter's treatment of bare-name keys in a map literal. */

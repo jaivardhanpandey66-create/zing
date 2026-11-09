@@ -27,9 +27,10 @@ import tempfile
 from pathlib import Path
 
 from .parser import (
-    Assign, Binary, Block, Break, Call, Comprehension, Continue, For,
-    FuncDecl, If, Import, Index, Let, ListLit, Literal, Logical, MapLit, Match,
-    PatternVar, Program, Return, Unary, Var, While, Wildcard,
+    Assign, Attribute, Binary, Block, Break, Call, ClassDecl, Comprehension,
+    Continue, Field, For, FuncDecl, If, Import, Index, Let, ListLit,
+    Literal, Logical, MapLit, Match, MethodCall, New, PatternVar, Program,
+    Return, SelfRef, Unary, Var, While, Wildcard,
 )
 
 RUNTIME = Path(__file__).resolve().parent / "rt" / "runtime.h"
@@ -84,6 +85,9 @@ class CCompiler:
         self.temp = 0
         self.loop_depth = 0
         self.funcs: set[str] = set()
+        self.classes: dict = {}
+        self.class_id = 0
+        self.locals: set[str] = set()
 
     def emit(self, line: str = "") -> None:
         self.lines.append(line)
@@ -97,6 +101,19 @@ class CCompiler:
         for stmt in program.body:
             if isinstance(stmt, FuncDecl):
                 self.funcs.add(stmt.name)
+            if isinstance(stmt, ClassDecl):
+                cid = self.class_id
+                self.class_id += 1
+                methods = {}
+                fields = []
+                for m in stmt.methods:
+                    methods[m.name] = m
+                for f in stmt.fields:
+                    fields.append(f)
+                self.classes[stmt.name] = {
+                    "id": cid, "methods": methods, "fields": fields,
+                    "parent": stmt.parent
+                }
 
         self.emit('#include "runtime.h"')
         self.emit("")
@@ -105,15 +122,22 @@ class CCompiler:
                 params = ", ".join("ZValue" for _ in stmt.params)
                 self.emit(f"ZValue {self._mangle(stmt.name)}"
                           f"({params or 'void'});")
+            if isinstance(stmt, ClassDecl):
+                for m in stmt.methods:
+                    params = "ZValue self" + (", " + ", ".join("ZValue" for _ in m.params) if m.params else "")
+                    self.emit(f"ZValue {self._mangle(stmt.name + '.' + m.name)}"
+                              f"({params});")
         self.emit("")
 
         for stmt in program.body:
             if isinstance(stmt, FuncDecl):
                 self.emit_func(stmt)
+            if isinstance(stmt, ClassDecl):
+                self.emit_class(stmt)
 
         self.emit("int main(void) {")
         for stmt in program.body:
-            if isinstance(stmt, FuncDecl):
+            if isinstance(stmt, FuncDecl) or isinstance(stmt, ClassDecl):
                 continue
             self.stmt(stmt, 1)
         self.emit("    return 0;")
@@ -125,6 +149,8 @@ class CCompiler:
         return "zfn_" + name.replace(".", "_")
 
     def emit_func(self, node: FuncDecl) -> None:
+        old_locals = self.locals
+        self.locals = set(node.params)
         params = []
         for p in node.params:
             if p.default is not None:
@@ -136,6 +162,30 @@ class CCompiler:
         self.emit("    return z_null();")
         self.emit("}")
         self.emit("")
+        self.locals = old_locals
+
+    def emit_class(self, node: ClassDecl) -> None:
+        info = self.classes.get(node.name, {})
+        cid = info.get("id", 0)
+        # methods - add implicit self
+        for m in node.methods:
+            old_locals = self.locals
+            mparams = ["self"] + [p.name for p in m.params]
+            self.locals = set(mparams)
+            params = []
+            # always pass self first
+            params.append("ZValue self")
+            for p in m.params:
+                if p.default is not None:
+                    raise UnsupportedError("default parameter values", m.line)
+                params.append("ZValue " + p.name)
+            self.emit(f"ZValue {self._mangle(node.name + '.' + m.name)}"
+                      f"({' , '.join(params)}) {{")
+            self.stmt(m.body, 1)
+            self.emit("    return z_null();")
+            self.emit("}")
+            self.emit("")
+            self.locals = old_locals
 
     # -- statements ---------------------------------------------------
     def stmt(self, node, depth: int) -> None:
@@ -143,6 +193,7 @@ class CCompiler:
         if isinstance(node, Let):
             tmp = self.expr(node.value)
             self.emit(f"{r}ZValue {node.name} = {tmp};")
+            self.locals.add(node.name)
         elif isinstance(node, Assign):
             tt = node.target
             if isinstance(tt, Var):
@@ -155,6 +206,18 @@ class CCompiler:
                 key = self._operand(tt.key)
                 val = self.expr(node.value)
                 self._emit_index_set(tt, tgt, key, val)
+            elif isinstance(tt, Attribute):
+                obj = self.expr(tt.target)
+                val = self.expr(node.value)
+                keystr = self.fresh("aks")
+                self.emit(f"{r}    ZValue {keystr} = z_str_cstr({_cstr(tt.name)});")
+                self.emit(f"{r}    if (({obj}).kind == Z_OBJ) {{")
+                self.emit(f"{r}        z_obj_set({obj}, {keystr}.as.s->data, {val});")
+                self.emit(f"{r}    }} else if (({obj}).kind == Z_MAP) {{")
+                self.emit(f"{r}        z_map_put({obj}, {keystr}.as.s->data, {val});")
+                self.emit(f"{r}    }} else {{")
+                self.emit(f"{r}        /* best effort */")
+                self.emit(f"{r}    }}")
             else:
                 raise UnsupportedError("assignment to this target", node.line)
         elif isinstance(node, Return):
@@ -167,15 +230,24 @@ class CCompiler:
             for s in node.body:
                 self.stmt(s, depth)
         elif isinstance(node, If):
-            for i, (cond, body) in enumerate(node.branches):
+            def emit_if(i, d):
+                cond, body = node.branches[i]
                 tmp = self.expr(cond)
-                kw = f"{r}if" if i == 0 else f"{r}}} else if"
-                self.emit(f"{kw} (z_truthy({tmp})) {{")
-                self.stmt(body, depth + 1)
-            if node.orelse is not None:
-                self.emit(f"{r}}} else {{")
-                self.stmt(node.orelse, depth + 1)
-            self.emit(f"{r}}}")
+                rr = "    " * d
+                self.emit(f"{rr}if (z_truthy({tmp})) {{")
+                self.stmt(body, d + 1)
+                if i + 1 < len(node.branches):
+                    self.emit(f"{rr}}} else {{")
+                    emit_if(i + 1, d + 1)
+                    self.emit(f"{rr}}}")
+                elif node.orelse is not None:
+                    self.emit(f"{rr}}} else {{")
+                    self.stmt(node.orelse, d + 1)
+                    self.emit(f"{rr}}}")
+                else:
+                    self.emit(f"{rr}}}")
+            if node.branches:
+                emit_if(0, depth)
         elif isinstance(node, While):
             self.emit(f"{r}for (;;) {{")
             tmp = self.expr(node.cond)
@@ -201,6 +273,14 @@ class CCompiler:
             self.emit(f"{r}(void){tmp};")
         elif isinstance(node, Import):
             raise UnsupportedError("import", node.line)
+        elif isinstance(node, ClassDecl):
+            pass
+        elif isinstance(node, New):
+            tmp = self.expr(node)
+            self.emit(f"{r}(void){tmp};")
+        elif isinstance(node, MethodCall):
+            tmp = self.expr(node)
+            self.emit(f"{r}(void){tmp};")
         else:
             raise UnsupportedError(type(node).__name__,
                                    getattr(node, "line", 0))
@@ -278,6 +358,14 @@ class CCompiler:
 
     # -- expressions (each returns the name of a temporary) -----------
     def expr(self, node) -> str:
+        if isinstance(node, New):
+            return self._new_expr(node)
+        if isinstance(node, MethodCall):
+            return self._method_call(node)
+        if isinstance(node, Attribute):
+            return self._attribute(node)
+        if isinstance(node, SelfRef):
+            return "self"
         if isinstance(node, Literal):
             return self._literal(node)
         if isinstance(node, Var):
@@ -369,8 +457,66 @@ class CCompiler:
         self.emit(f"    ZValue {keystr} = z_key_str({key});")
         self.emit(f"    ZValue {tmp} = (({target}).kind == Z_MAP)")
         self.emit(f"        ? z_map_get({target}, {keystr}.as.s->data)")
+        self.emit(f"        : (({target}).kind == Z_OBJ)")
+        self.emit(f"        ? z_obj_get({target}, {keystr}.as.s->data)")
         self.emit(f"        : z_index_get({target}, {key});")
         return tmp
+
+    def _attribute(self, node: Attribute) -> str:
+        obj = self.expr(node.target)
+        tmp = self.fresh("attr")
+        keystr = self.fresh("aks")
+        self.emit(f"    ZValue {keystr} = z_str_cstr({_cstr(node.name)});")
+        self.emit(f"    ZValue {tmp} = (({obj}).kind == Z_OBJ)")
+        self.emit(f"        ? z_obj_get({obj}, {keystr}.as.s->data)")
+        self.emit(f"        : (({obj}).kind == Z_MAP)")
+        self.emit(f"        ? z_map_get({obj}, {keystr}.as.s->data)")
+        self.emit(f"        : z_null();")
+        return tmp
+
+    def _new_expr(self, node: New) -> str:
+        cls_name = node.class_name
+        info = self.classes.get(cls_name)
+        if info is None:
+            raise UnsupportedError(f"class {cls_name!r}", node.line)
+        cid = info.get("id", 0)
+        tmp = self.fresh("obj")
+        self.emit(f"    ZValue {tmp} = z_obj({cid});")
+        # init fields
+        for f in info.get("fields", []):
+            if f.value is not None:
+                fv = self.expr(f.value)
+                self.emit(f"    z_obj_set({tmp}, {_cstr(f.name)}, {fv});")
+            else:
+                self.emit(f"    z_obj_set({tmp}, {_cstr(f.name)}, z_null());")
+        # call constructor if exists
+        ctor = info.get("methods", {}).get("new")
+        if ctor is not None:
+            args = [tmp] + [self.expr(a) for a in node.args]
+            call = self.fresh("ctor")
+            self.emit(f"    ZValue {call} = {self._mangle(cls_name + '.new')}"
+                      f"({', '.join(args)});")
+        elif node.args:
+            raise UnsupportedError(
+                f"class {cls_name} has no 'new' method but args were given",
+                node.line)
+        return tmp
+
+    def _method_call(self, node: MethodCall) -> str:
+        target = self.expr(node.target)
+        # look for method in any known class
+        cls_name = None
+        for cname, info in self.classes.items():
+            if node.name in info.get("methods", {}):
+                cls_name = cname
+                break
+        if cls_name and node.name in self.classes[cls_name].get("methods", {}):
+            args = [target] + [self.expr(a) for a in node.args]
+            tmp = self.fresh("mcall")
+            self.emit(f"    ZValue {tmp} = {self._mangle(cls_name + '.' + node.name)}"
+                      f"({', '.join(args)});")
+            return tmp
+        raise UnsupportedError(f"method call {node.name!r}", node.line)
 
     def _unary(self, node: Unary) -> str:
         inner = self.expr(node.operand)
@@ -391,13 +537,21 @@ class CCompiler:
                       f" : z_add({a}, {b});")
             return tmp
         if op in _BIN_CALL:
-            return f"{_BIN_CALL[op]}({a}, {b})"
+            tmp = self.fresh("bin")
+            self.emit(f"    ZValue {tmp} = {_BIN_CALL[op]}({a}, {b});")
+            return tmp
         if op == "==":
-            return f"z_bool(z_eq({a}, {b}))"
+            tmp = self.fresh("eq")
+            self.emit(f"    ZValue {tmp} = z_bool(z_eq({a}, {b}));")
+            return tmp
         if op == "!=":
-            return f"z_bool(!z_eq({a}, {b}))"
+            tmp = self.fresh("neq")
+            self.emit(f"    ZValue {tmp} = z_bool(!z_eq({a}, {b}));")
+            return tmp
         if op in ("<", "<=", ">", ">="):
-            return f"z_bool(z_to_float({a}) {op} z_to_float({b}))"
+            tmp = self.fresh("cmp")
+            self.emit(f"    ZValue {tmp} = z_bool(z_to_float({a}) {op} z_to_float({b}));")
+            return tmp
         raise UnsupportedError(f"operator {op!r}", node.line)
 
     def _comprehension(self, node: Comprehension) -> str:

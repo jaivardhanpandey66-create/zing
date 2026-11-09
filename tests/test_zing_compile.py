@@ -92,9 +92,9 @@ class CompileBasics(unittest.TestCase):
 
 class CompileErrors(unittest.TestCase):
     def test_classes_are_rejected_with_a_line(self):
-        with self.assertRaises(UnsupportedError) as ctx:
-            compile_to_c(Parser("class Dog { }").parse())
-        self.assertIn("ClassDecl", str(ctx.exception))
+        # Classes are now supported by the C backend.
+        out = native('class Dog { let name; func new(n){ self.name=n } func speak(){ return self.name } } print(new Dog("Rex").speak())')
+        self.assertEqual(out, ["Rex"])
 
     def test_unknown_call_is_rejected(self):
         with self.assertRaises(UnsupportedError):
