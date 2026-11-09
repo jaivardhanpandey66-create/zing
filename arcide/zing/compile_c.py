@@ -551,6 +551,9 @@ class CCompiler:
         if isinstance(node, Literal):
             return self._literal(node)
         if isinstance(node, Var):
+            vt = self.var_types.get(node.name, '')
+            if vt:
+                return self._wrap(node.name, vt)
             return node.name
         if isinstance(node, ListLit):
             return self._list_literal(node)
@@ -803,6 +806,27 @@ class CCompiler:
 
     def _binary(self, node: Binary) -> str:
         op = node.op
+        lt = self._expr_type(node.left); rt = self._expr_type(node.right)
+        if op in ('<','<=','>','>=','==','!=') and lt in ('int','float','bool') and rt in ('int','float','bool'):
+            if lt == 'int' and rt == 'int' and op not in ('==','!='):
+                a = self._expr_typed(node.left,'int'); b = self._expr_typed(node.right,'int')
+                tmp = self.fresh("cmp"); self.emit(f"    ZValue {tmp} = z_bool(({a}) {op} ({b}));"); return tmp
+            if op in ('==','!=') and lt == rt and lt in ('int','float','bool'):
+                ct = 'int' if lt == 'bool' else lt
+                a = self._expr_typed(node.left,ct); b = self._expr_typed(node.right,ct)
+                cop = '==' if op=='==' else '!='
+                tmp = self.fresh("cmp"); self.emit(f"    ZValue {tmp} = z_bool(({a}) {cop} ({b}));"); return tmp
+            a = self._expr_typed(node.left,'float'); b = self._expr_typed(node.right,'float')
+            tmp = self.fresh("cmp"); self.emit(f"    ZValue {tmp} = z_bool(({a}) {op} ({b}));"); return tmp
+        if op in ('+','-','*','%') and lt == 'int' and rt == 'int':
+            a = self._expr_typed(node.left,'int'); b = self._expr_typed(node.right,'int')
+            tmp = self.fresh("bin"); self.emit(f"    ZValue {tmp} = z_int(({a}) {op} ({b}));"); return tmp
+        if op == '/' and lt in ('int','float') and rt in ('int','float'):
+            a = self._expr_typed(node.left,'float'); b = self._expr_typed(node.right,'float')
+            tmp = self.fresh("bin"); self.emit(f"    ZValue {tmp} = z_float(({a}) / ({b}));"); return tmp
+        if op in ('+','-','*','%') and lt in ('int','float') and rt in ('int','float'):
+            a = self._expr_typed(node.left,'float'); b = self._expr_typed(node.right,'float')
+            tmp = self.fresh("bin"); self.emit(f"    ZValue {tmp} = z_float(({a}) {op} ({b}));"); return tmp
         a = self._operand(node.left)
         b = self._operand(node.right)
         if op == "+":
