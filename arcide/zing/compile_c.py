@@ -85,9 +85,11 @@ class CCompiler:
         self.temp = 0
         self.loop_depth = 0
         self.funcs: set[str] = set()
+        self.func_sigs: dict[str, dict] = {}
         self.classes: dict = {}
         self.class_id = 0
         self.locals: set[str] = set()
+        self.var_types: dict[str, str] = {}  # name -> 'int'|'float'|'bool'|
 
     def emit(self, line: str = "") -> None:
         self.lines.append(line)
@@ -97,10 +99,91 @@ class CCompiler:
         return f"_{tag}{self.temp}"
 
     # -- program ------------------------------------------------------
+    @staticmethod
+    @staticmethod
+    def _norm_type(ann) -> str:
+        if ann is None:
+            return ''
+        a = str(ann).strip().lower()
+        if a in ('int', 'integer', 'i64', 'long'):
+            return 'int'
+        if a in ('float', 'double', 'number', 'num', 'f64'):
+            return 'float'
+        if a in ('bool', 'boolean'):
+            return 'bool'
+        return ''
+
+    @staticmethod
+    def _ctype(typ: str) -> str:
+        return {'int': 'long long', 'float': 'double', 'bool': 'int'}.get(typ, 'ZValue')
+
+    @staticmethod
+    def _zero(typ: str) -> str:
+        return {'int': '0LL', 'float': '0.0', 'bool': '0'}.get(typ, 'z_null()')
+
+    def _wrap(self, expr: str, typ: str) -> str:
+        if typ == 'int':
+            return f"z_int({expr})"
+        if typ == 'float':
+            return f"z_float({expr})"
+        if typ == 'bool':
+            return f"z_bool({expr})"
+        return expr
+
+    def _unwrap(self, expr: str, typ: str) -> str:
+        if typ == 'int':
+            return f"z_to_int({expr})"
+        if typ == 'float':
+            return f"z_to_float({expr})"
+        if typ == 'bool':
+            return f"z_truthy({expr})"
+        return expr
+
+    def _expr_type(self, node) -> str:
+        if isinstance(node, Literal):
+            v = node.value
+            if isinstance(v, bool):
+                return 'bool'
+            if isinstance(v, int) and not isinstance(v, bool):
+                return 'int'
+            if isinstance(v, float):
+                return 'float'
+            return ''
+        if isinstance(node, Var):
+            return self.var_types.get(node.name, '')
+        if isinstance(node, Binary):
+            op = node.op
+            if op in ('<', '<=', '>', '>=', '==', '!='):
+                return 'bool'
+            lt = self._expr_type(node.left)
+            rt = self._expr_type(node.right)
+            if op in ('+', '-', '*', '%') and lt == 'int' and rt == 'int':
+                return 'int'
+            if op in ('+', '-', '*', '/', '%') and lt in ('int','float') and rt in ('int','float'):
+                return 'float'
+            return ''
+        if isinstance(node, Unary):
+            if node.op == '!':
+                return 'bool'
+            if node.op == '-' and self._expr_type(node.operand) == 'int':
+                return 'int'
+            if node.op == '-' and self._expr_type(node.operand) == 'float':
+                return 'float'
+            return ''
+        if isinstance(node, Call) and isinstance(node.func, Var):
+            return self.func_sigs.get(node.func.name, {}).get('ret', '')
+        return ''
+
+    def _collect_sig(self, name: str, node: FuncDecl):
+        params = [self._norm_type(getattr(p, 'annotation', None)) for p in node.params]
+        ret = self._norm_type(getattr(node, 'returns', None))
+        self.func_sigs[name] = {"params": params, "ret": ret}
+
     def compile(self, program: Program) -> str:
         for stmt in program.body:
             if isinstance(stmt, FuncDecl):
                 self.funcs.add(stmt.name)
+                self._collect_sig(stmt.name, stmt)
             if isinstance(stmt, ClassDecl):
                 cid = self.class_id
                 self.class_id += 1
@@ -108,6 +191,7 @@ class CCompiler:
                 fields = []
                 for m in stmt.methods:
                     methods[m.name] = m
+                    self._collect_sig(stmt.name + '.' + m.name, m)
                 for f in stmt.fields:
                     fields.append(f)
                 self.classes[stmt.name] = {
@@ -117,16 +201,23 @@ class CCompiler:
 
         self.emit('#include "runtime.h"')
         self.emit("")
+        # emit prototypes
         for stmt in program.body:
             if isinstance(stmt, FuncDecl):
-                params = ", ".join("ZValue" for _ in stmt.params)
-                self.emit(f"ZValue {self._mangle(stmt.name)}"
+                sig = self.func_sigs.get(stmt.name, {})
+                ps = sig.get('params', [''] * len(stmt.params))
+                ret = sig.get('ret', '')
+                params = ", ".join(self._ctype(t) for t in ps)
+                self.emit(f"{self._ctype(ret)} {self._mangle(stmt.name)}"
                           f"({params or 'void'});")
             if isinstance(stmt, ClassDecl):
                 for m in stmt.methods:
-                    params = "ZValue self" + (", " + ", ".join("ZValue" for _ in m.params) if m.params else "")
-                    self.emit(f"ZValue {self._mangle(stmt.name + '.' + m.name)}"
-                              f"({params});")
+                    key = stmt.name + '.' + m.name
+                    sig = self.func_sigs.get(key, {})
+                    ps = sig.get('params', [''] * len(m.params))
+                    ret = sig.get('ret', '')
+                    params = "ZValue self" + ("".join(", " + self._ctype(t) for t in ps))
+                    self.emit(f"{self._ctype(ret)} {self._mangle(key)}({params});")
         self.emit("")
 
         for stmt in program.body:
@@ -150,55 +241,115 @@ class CCompiler:
 
     def emit_func(self, node: FuncDecl) -> None:
         old_locals = self.locals
-        self.locals = set(node.params)
+        old_types = self.var_types
+        old_ret = getattr(self, '_cur_ret', '')
+        sig = self.func_sigs.get(node.name, {})
+        ps = sig.get('params', [''] * len(node.params))
+        ret = sig.get('ret', '')
+        self._cur_ret = ret
+        self.locals = set(p.name for p in node.params)
+        self.var_types = {p.name: t for p, t in zip(node.params, ps) if t}
         params = []
-        for p in node.params:
+        for p, t in zip(node.params, ps):
             if p.default is not None:
                 raise UnsupportedError("default parameter values", node.line)
-            params.append("ZValue " + p.name)
-        self.emit(f"ZValue {self._mangle(node.name)}"
+            params.append(self._ctype(t) + " " + p.name)
+        self.emit(f"{self._ctype(ret)} {self._mangle(node.name)}"
                   f"({' , '.join(params) if params else 'void'}) {{")
         self.stmt(node.body, 1)
-        self.emit("    return z_null();")
+        self.emit(f"    return {self._zero(ret)};")
         self.emit("}")
         self.emit("")
         self.locals = old_locals
+        self.var_types = old_types
+        self._cur_ret = old_ret
 
     def emit_class(self, node: ClassDecl) -> None:
         info = self.classes.get(node.name, {})
-        cid = info.get("id", 0)
+        self._resolve_class(node.name)
         # methods - add implicit self
         for m in node.methods:
             old_locals = self.locals
-            mparams = ["self"] + [p.name for p in m.params]
-            self.locals = set(mparams)
-            params = []
-            # always pass self first
-            params.append("ZValue self")
-            for p in m.params:
+            old_types = self.var_types
+            old_ret = getattr(self, '_cur_ret', '')
+            key = node.name + '.' + m.name
+            sig = self.func_sigs.get(key, {})
+            ps = sig.get('params', [''] * len(m.params))
+            ret = sig.get('ret', '')
+            self._cur_ret = ret
+            self.locals = set(p.name for p in m.params)
+            self.var_types = {p.name: t for p, t in zip(m.params, ps) if t}
+            params = ["ZValue self"]
+            for p, t in zip(m.params, ps):
                 if p.default is not None:
                     raise UnsupportedError("default parameter values", m.line)
-                params.append("ZValue " + p.name)
-            self.emit(f"ZValue {self._mangle(node.name + '.' + m.name)}"
+                params.append(self._ctype(t) + " " + p.name)
+            self.emit(f"{self._ctype(ret)} {self._mangle(key)}"
                       f"({' , '.join(params)}) {{")
             self.stmt(m.body, 1)
-            self.emit("    return z_null();")
+            self.emit(f"    return {self._zero(ret)};")
             self.emit("}")
             self.emit("")
             self.locals = old_locals
+            self.var_types = old_types
+            self._cur_ret = old_ret
+
+    def _resolve_class(self, name: str):
+        info = self.classes.get(name)
+        if not info:
+            return None
+        if info.get("_resolved"):
+            return info
+        parent = info.get("parent")
+        pinfo = self._resolve_class(parent) if parent else None
+        # merge fields: parent first
+        fields = []
+        if pinfo:
+            fields.extend(pinfo.get("fields", []))
+        fields.extend(info.get("fields", []))
+        methods = {}
+        if pinfo:
+            methods.update(pinfo.get("methods", {}))
+        methods.update(info.get("methods", {}))
+        info["all_fields"] = fields
+        info["all_methods"] = methods
+        info["_resolved"] = True
+        return info
+
+    def _find_method_owner(self, cls_name: str, method: str):
+        info = self._resolve_class(cls_name)
+        if not info:
+            return None
+        if method in info.get("methods", {}):
+            return cls_name
+        parent = info.get("parent")
+        if parent:
+            return self._find_method_owner(parent, method)
+        return None
 
     # -- statements ---------------------------------------------------
     def stmt(self, node, depth: int) -> None:
         r = "    " * depth
         if isinstance(node, Let):
-            tmp = self.expr(node.value)
-            self.emit(f"{r}ZValue {node.name} = {tmp};")
+            vt = self._expr_type(node.value)
+            if vt:
+                tmp = self._expr_typed(node.value, vt)
+                self.emit(f"{r}{self._ctype(vt)} {node.name} = {tmp};")
+                self.var_types[node.name] = vt
+            else:
+                tmp = self.expr(node.value)
+                self.emit(f"{r}ZValue {node.name} = {tmp};")
             self.locals.add(node.name)
         elif isinstance(node, Assign):
             tt = node.target
             if isinstance(tt, Var):
-                tmp = self.expr(node.value)
-                self.emit(f"{r}{tt.name} = {tmp};")
+                vt = self.var_types.get(tt.name, '')
+                if vt:
+                    tmp = self._expr_typed(node.value, vt)
+                    self.emit(f"{r}{tt.name} = {tmp};")
+                else:
+                    tmp = self.expr(node.value)
+                    self.emit(f"{r}{tt.name} = {tmp};")
             elif isinstance(tt, Index):
                 if tt.is_slice:
                     raise UnsupportedError("assigning to a slice", node.line)
@@ -221,10 +372,14 @@ class CCompiler:
             else:
                 raise UnsupportedError("assignment to this target", node.line)
         elif isinstance(node, Return):
+            ret = getattr(self, '_cur_ret', '')
             if node.value is None:
-                self.emit(f"{r}return z_null();")
+                self.emit(f"{r}return {self._zero(ret)};")
             else:
-                tmp = self.expr(node.value)
+                if ret:
+                    tmp = self._expr_typed(node.value, ret)
+                else:
+                    tmp = self.expr(node.value)
                 self.emit(f"{r}return {tmp};")
         elif isinstance(node, Block):
             for s in node.body:
@@ -232,9 +387,20 @@ class CCompiler:
         elif isinstance(node, If):
             def emit_if(i, d):
                 cond, body = node.branches[i]
-                tmp = self.expr(cond)
                 rr = "    " * d
-                self.emit(f"{rr}if (z_truthy({tmp})) {{")
+                ct = self._expr_type(cond)
+                if ct == 'bool':
+                    tmp = self._expr_typed(cond, 'bool')
+                    self.emit(f"{rr}if ({tmp}) {{")
+                elif ct == 'int':
+                    tmp = self._expr_typed(cond, 'int')
+                    self.emit(f"{rr}if ({tmp} != 0) {{")
+                elif ct == 'float':
+                    tmp = self._expr_typed(cond, 'float')
+                    self.emit(f"{rr}if ({tmp} != 0.0) {{")
+                else:
+                    tmp = self.expr(cond)
+                    self.emit(f"{rr}if (z_truthy({tmp})) {{")
                 self.stmt(body, d + 1)
                 if i + 1 < len(node.branches):
                     self.emit(f"{rr}}} else {{")
@@ -345,7 +511,23 @@ class CCompiler:
             self.loop_depth -= 1
             self.emit(f"{r}}}")
             return
-        # `for i in a..b`
+        # `for i in a..b` - specialize to int if possible
+        st = self._expr_type(node.start)
+        sp = self._expr_type(node.stop)
+        if st == 'int' and sp == 'int':
+            start = self._expr_typed(node.start, 'int')
+            stop = self._expr_typed(node.stop, 'int')
+            old = self.var_types.get(node.var)
+            self.var_types[node.var] = 'int'
+            self.emit(f"{r}for (long long {node.var} = {start};"
+                      f" {node.var} < {stop}; {node.var}++) {{")
+            self.loop_depth += 1
+            self.stmt(node.body, depth + 1)
+            self.loop_depth -= 1
+            self.emit(f"{r}}}")
+            if old is None: self.var_types.pop(node.var, None)
+            else: self.var_types[node.var] = old
+            return
         start = self.expr(node.start)
         stop = self.expr(node.stop)
         self.emit(f"{r}for (long long _i = z_to_int({start});"
@@ -476,25 +658,25 @@ class CCompiler:
 
     def _new_expr(self, node: New) -> str:
         cls_name = node.class_name
-        info = self.classes.get(cls_name)
+        info = self._resolve_class(cls_name)
         if info is None:
             raise UnsupportedError(f"class {cls_name!r}", node.line)
         cid = info.get("id", 0)
         tmp = self.fresh("obj")
         self.emit(f"    ZValue {tmp} = z_obj({cid});")
-        # init fields
-        for f in info.get("fields", []):
+        # init fields (base first)
+        for f in info.get("all_fields", info.get("fields", [])):
             if f.value is not None:
                 fv = self.expr(f.value)
                 self.emit(f"    z_obj_set({tmp}, {_cstr(f.name)}, {fv});")
             else:
                 self.emit(f"    z_obj_set({tmp}, {_cstr(f.name)}, z_null());")
-        # call constructor if exists
-        ctor = info.get("methods", {}).get("new")
-        if ctor is not None:
+        # call constructor if exists (resolved)
+        ctor_owner = self._find_method_owner(cls_name, "new")
+        if ctor_owner is not None:
             args = [tmp] + [self.expr(a) for a in node.args]
             call = self.fresh("ctor")
-            self.emit(f"    ZValue {call} = {self._mangle(cls_name + '.new')}"
+            self.emit(f"    ZValue {call} = {self._mangle(ctor_owner + '.new')}"
                       f"({', '.join(args)});")
         elif node.args:
             raise UnsupportedError(
@@ -504,19 +686,112 @@ class CCompiler:
 
     def _method_call(self, node: MethodCall) -> str:
         target = self.expr(node.target)
-        # look for method in any known class
-        cls_name = None
+        # Try to resolve statically if target is a known class construction pattern? Not feasible generally.
+        # Emit a runtime-ish dispatch by checking class_id? For now, find any class that defines the method
+        # and emit a call based on a best guess is wrong. Better: if receiver came from `new X()` in simple cases,
+        # track type. Minimal: support method calls by using the defining class's method name only when unique.
+        candidates = []
         for cname, info in self.classes.items():
-            if node.name in info.get("methods", {}):
-                cls_name = cname
-                break
-        if cls_name and node.name in self.classes[cls_name].get("methods", {}):
+            info = self._resolve_class(cname)
+            if node.name in info.get("all_methods", {}):
+                owner = self._find_method_owner(cname, node.name)
+                if owner:
+                    candidates.append((cname, owner))
+        if not candidates:
+            raise UnsupportedError(f"method call {node.name!r}", node.line)
+        # If only one defining owner across all classes, call it (works if same impl; limited)
+        owners = sorted(set(o for _, o in candidates))
+        if len(owners) == 1:
+            owner = owners[0]
             args = [target] + [self.expr(a) for a in node.args]
             tmp = self.fresh("mcall")
-            self.emit(f"    ZValue {tmp} = {self._mangle(cls_name + '.' + node.name)}"
+            self.emit(f"    ZValue {tmp} = {self._mangle(owner + '.' + node.name)}"
                       f"({', '.join(args)});")
             return tmp
-        raise UnsupportedError(f"method call {node.name!r}", node.line)
+        # Multiple owners -> generate if-chain on class_id
+        tmp = self.fresh("mcall")
+        self.emit(f"    ZValue {tmp} = z_null();")
+        first = True
+        for cname, owner in candidates:
+            cid = self.classes[cname]["id"]
+            cond = f"if" if first else "else if"
+            self.emit(f"    {cond} (({target}).kind == Z_OBJ && ({target}).as.o->class_id == {cid}) {{")
+            args = [target] + [self.expr(a) for a in node.args]
+            self.emit(f"        {tmp} = {self._mangle(owner + '.' + node.name)}"
+                      f"({', '.join(args)});")
+            self.emit(f"    }}")
+            first = False
+        return tmp
+
+
+    def _expr_typed(self, node, want: str) -> str:
+        """Emit an expression and return a C expr of type want (int/float/bool)."""
+        if want == '':
+            return self.expr(node)
+        t = type(node)
+        if t is Literal:
+            v = node.value
+            if want == 'int':
+                if isinstance(v, bool): return '1LL' if v else '0LL'
+                if isinstance(v, (int, float)): return f"{int(v)}LL"
+            if want == 'float':
+                if isinstance(v, (int, float, bool)): return repr(float(v))
+            if want == 'bool':
+                return '1' if v else '0'
+        if t is Var:
+            vt = self.var_types.get(node.name,'')
+            if vt == want:
+                return node.name
+            if vt and vt != want:
+                # coerce known typed var to wanted C type
+                if want == 'int' and vt == 'float': return f"((long long){node.name})"
+                if want == 'float' and vt == 'int': return f"((double){node.name})"
+                if want == 'bool': return f"(({node.name}) ? 1 : 0)"
+                if want in ('int','float') and vt == 'bool': return f"({want == 'float' and '(double)' or '(long long)'}{node.name})"
+        if t is Binary:
+            op = node.op
+            if want == 'bool' and op in ('<','<=','>','>=','==','!='):
+                lt = self._expr_type(node.left); rt = self._expr_type(node.right)
+                if lt == 'int' and rt == 'int':
+                    a = self._expr_typed(node.left,'int'); b = self._expr_typed(node.right,'int')
+                    return f"(({a}) {op} ({b})) ? 1 : 0"
+                a = self._expr_typed(node.left,'float'); b = self._expr_typed(node.right,'float')
+                return f"(({a}) {op} ({b})) ? 1 : 0"
+            if want == 'int' and op in ('+','-','*','%'):
+                lt = self._expr_type(node.left); rt = self._expr_type(node.right)
+                if lt == 'int' and rt == 'int':
+                    a = self._expr_typed(node.left,'int'); b = self._expr_typed(node.right,'int')
+                    return f"(({a}) {op} ({b}))"
+            if want in ('int','float') and op in ('+','-','*','/','%'):
+                lt = self._expr_type(node.left); rt = self._expr_type(node.right)
+                if lt in ('int','float') and rt in ('int','float'):
+                    a = self._expr_typed(node.left,'float'); b = self._expr_typed(node.right,'float')
+                    cop = '/' if op == '/' else op
+                    if want == 'int' and cop != '/':
+                        a = self._expr_typed(node.left,'int'); b = self._expr_typed(node.right,'int')
+                        return f"(({a}) {cop} ({b}))"
+                    return f"(({a}) {cop} ({b}))"
+        if t is Unary and node.op == '-' and want == 'int' and self._expr_type(node.operand)=='int':
+            return f"(-({self._expr_typed(node.operand,'int')}))"
+        if t is Call and isinstance(node.func, Var):
+            sig = self.func_sigs.get(node.func.name)
+            if sig and sig.get('ret') == want:
+                args = []
+                ps = sig.get('params', [])
+                for i, a in enumerate(node.args):
+                    pt = ps[i] if i < len(ps) else ''
+                    args.append(self._expr_typed(a, pt) if pt else self.expr(a))
+                tmp = self.fresh("scall")
+                self.emit(f"    {self._ctype(want)} {tmp} = {self._mangle(node.func.name)}({', '.join(args)});")
+                return tmp
+        # fallback
+        ex = self.expr(node)
+        if isinstance(ex, str) and ex in self.var_types and self.var_types[ex] != '':
+            vt = self.var_types[ex]
+            if want == 'int' and vt == 'float': return f"((long long){ex})"
+            if want == 'float' and vt == 'int': return f"((double){ex})"
+            if want == 'bool': return f"(({ex}) ? 1 : 0)"
+        return self._unwrap(ex, want)
 
     def _unary(self, node: Unary) -> str:
         inner = self.expr(node.operand)
@@ -613,7 +888,15 @@ class CCompiler:
         if not isinstance(node.func, Var):
             raise UnsupportedError("calling a computed value", node.line)
         name = node.func.name
-        args = [self._operand(a) for a in node.args]
+        sig = self.func_sigs.get(name)
+        if sig and any(sig.get('params', [])):
+            args = []
+            ps = sig.get('params', [])
+            for i, a in enumerate(node.args):
+                pt = ps[i] if i < len(ps) else ''
+                args.append(self._expr_typed(a, pt) if pt else self.expr(a))
+        else:
+            args = [self._operand(a) for a in node.args]
         if name == "print":
             arglist = (", " + ", ".join(args)) if args else ""
             return f"z_print_multi({len(args)}{arglist})"
@@ -621,7 +904,6 @@ class CCompiler:
             if len(args) != 1:
                 raise UnsupportedError(f"{name} with that many arguments",
                                        node.line)
-            fn = "z_len" if name == "len" else "z_to_str"
             if name == "len":
                 return f"z_int(z_len({args[0]}))"
             tmp = self.fresh("s")
@@ -655,6 +937,12 @@ class CCompiler:
                       f" z_to_int({key}) < z_len({container})));")
             return tmp
         if name in self.funcs:
+            ret = sig.get('ret', '') if sig else ''
+            if ret:
+                tmp = self.fresh("call")
+                self.emit(f"    {self._ctype(ret)} {tmp} = {self._mangle(name)}"
+                          f"({', '.join(args)});")
+                return self._wrap(tmp, ret)
             tmp = self.fresh("call")
             self.emit(f"    ZValue {tmp} = {self._mangle(name)}"
                       f"({', '.join(args)});")
